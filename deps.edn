@@ -1,0 +1,25 @@
+{:paths     ["src" "resources"]
+ :deps      {cheshire                            {:mvn/version "5.8.1"}
+             com.cognitect.aws/api               {:mvn/version "0.8.301"}
+             com.cognitect.aws/endpoints         {:mvn/version "1.1.11.537"}
+             com.cognitect.aws/cloudsearch       {:mvn/version "697.2.391.0"}
+             com.cognitect.aws/cloudsearchdomain {:mvn/version "697.2.391.0"}
+             com.datomic/client-cloud            {:mvn/version "0.8.71"}
+             com.datomic/ion                     {:mvn/version "0.9.35"}
+             org.clojure/data.json               {:mvn/version "0.2.6"}
+             com.roomkey/drcfg                   {:mvn/version "6.4.0"
+                                                  :exclusions  [org.slf4j/slf4j-log4j12]}
+             org.clojure/clojure                 {:mvn/version "1.9.0"}
+             }
+ ;; TODO: figure out how to not get warnings about :dependency-conflicts when pushing
+
+ :mvn/repos {"datomic-cloud" {:url "s3://datomic-releases-1fc2183a/maven/releases"}
+             "rk-maven"      {:url "s3p://rk-maven/releases"}
+             "central"       {:url "https://repo1.maven.org/maven2/"}
+             "clojars"       {:url "https://clojars.org/repo"}}
+ :aliases   {:dev {:extra-deps {com.datomic/ion-dev {:mvn/version "0.9.234"}}}
+             :test  {:main-opts   ["-m" "cognitect.test-runner"]
+                     :extra-paths ["test"]
+                     :extra-deps  {com.cognitect/test-runner {:git/url "https://github.com/cognitect-labs/test-runner.git"
+                                                              :sha     "209b64504cb3bd3b99ecfec7937b358a879f55c1"}}}}}
+

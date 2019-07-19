@@ -1,0 +1,6 @@
+{:app-name "transactor-fns"
+
+ :allow [
+         transactor-fns.core/echo]
+
+ :lambdas {}}
