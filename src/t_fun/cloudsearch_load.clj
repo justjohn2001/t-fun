@@ -1,4 +1,4 @@
-(ns transactor-fns.cloudsearch-load
+(ns t-fun.cloudsearch-load
   (:require [cheshire.core :as json]
             [clojure.core.async :as a]
             [clojure.set :as set]
@@ -14,9 +14,9 @@
   (:import (java.time Instant)
            (java.io ByteArrayInputStream)))
 
-(def stage (delay (keyword (or (get (System/getenv) "STAGE")
-                               (get (ion/get-env) :env)
-                               "test"))))
+(def stage (future (keyword (or (get (System/getenv) "STAGE")
+                                (get (ion/get-env) :env)
+                                "test"))))
 
 (defn datomic-config
   [stage region]
@@ -182,23 +182,24 @@
                                            (or (seq region) []))))]
     (assoc results :updates (set/union place country-places region-places))))
 
+(def SQS_MESSAGE_SIZE 250000)
+
+(defn send-reducer
+  [s i]
+  (if (> (count s) 250000)         ;; SQS limit is 256K
+    (aws/invoke sqs-client {:op :SendMessage :request}))
+  )
+
 (defn queue-updates
-  [dt-conn stage start]
+  [dt-conn start]
   (let [sqs-client (aws/client {:api :sqs})
         queue-url (aws/invoke sqs-client {:op :ListQueues
-                                          :request {:QueueNamePrefix (format "cloudsearch-locations-%s" stage)}})])
-  (let [cs-client (aws/client {:api :cloudsearch})
-        domain-name (format "locations-%s" (name stage))
-        domain-status-list (aws/invoke cs-client {:op :DescribeDomains :request {:DomainNames [domain-name]}})
-        domain-status (get-in domain-status-list [:DomainStatusList 0])]
-    (cond
-      (:Processing domain-status) (log/warn "Domain is currently processing")
-      (:RequiresIndexDocuments domain-status) (log/warn "Domain requires indexing")
-      :else (let [endpoint (get-in domain-status [:DocService :Endpoint])
-                  doc-client (aws/client {:api :cloudsearchdomain :endpoint-override endpoint})
-                  {:keys [updates last-tx]} (all-updates dt-conn start)
-                  db (d/db dt-conn)])
-      )))
+                                          :request {:QueueNamePrefix (format "cloudsearch-locations-%s" @stage)}})]
+    (reduce send-reducer
+            {:length 0
+             :items []}
+            (all-updates dt-conn start))
+    ))
 
 (defn upload-docs
   [client rows]

@@ -1,4 +1,4 @@
-(ns transactor-fns.core
+(ns t-fun.core
   (:require [datomic.ion :as ion]
             [datomic.ion.cast :as cast]))
 
