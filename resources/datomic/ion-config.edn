@@ -1,4 +1,4 @@
-{:app-name "transactor-fns"
+{:app-name "datomic-cloud-development"
 
  :allow [
          t-fun.core/echo]

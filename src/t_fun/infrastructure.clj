@@ -3,4 +3,4 @@
 
 (def topology {})
 
-(def stack (future (str (UUID/randomUUID) "\n" (prn-str topology))))
+(def stack (future (str (UUID/randomUUID) "\n" (pr-str topology))))
