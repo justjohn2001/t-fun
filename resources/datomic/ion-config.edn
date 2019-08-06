@@ -1,6 +1,8 @@
 {:app-name "transactor-fns"
 
  :allow [
-         transactor-fns.core/echo]
+         t-fun.core/echo]
 
- :lambdas {}}
+ :lambdas {:echo {:fn t-fun.core/echo
+                  :description "Echos request back"
+                  :concurrency-limit 1}}}
