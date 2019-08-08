@@ -23,7 +23,7 @@
                                                                                          :arn)
                                                        ::lambda/function-name lambda-name
                                                        ::lambda/batch-size 1})]
-    (-> {:tfun-cloudsearch-load cloudsearch-queue
+    (-> {(keyword cloudsearch-queue-name) cloudsearch-queue
          :tfun-cloudsearch-load-esm cs-queue->lambda}
         (c/template "Resources to support t-fun")
         e/encode)))
