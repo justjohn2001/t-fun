@@ -101,7 +101,7 @@
                    (let [stage (keyword (or (get (System/getenv) "STAGE")
                                             (get (ion/get-env) :env)
                                             "development"))]
-                     (str (UUID/randomUUID) "\n" (pr-str (make-template stage PREFIX))))))
+                     (build-stack stage))))
 
 (defn stack-state
   [{:keys [input] :as params}]

@@ -10,6 +10,8 @@
 
 (defn echo
   [{:keys [input] :as params}]
-  (string/join "\n" [@i/stack-error
+  (string/join "\n" [(ion/get-app-info)
+                     (ion/get-env)
+                     (ion/get-params)
                      (pr-str (or input params))]))
 
