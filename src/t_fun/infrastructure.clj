@@ -10,15 +10,12 @@
             [datomic.ion :as ion])
   (:import java.util.UUID))
 
+(def PREFIX "tfun")
 
 (defn make-template
-  []
-  (let [PREFIX "tfun"
-        stage (keyword (or (get (System/getenv) "STAGE")
-                           (get (ion/get-env) :env)
-                           "development"))
-        cloudsearch-queue-name (format "%s-cloudsearch-load-%s"
-                                       PREFIX
+  [stage prefix]
+  (let [cloudsearch-queue-name (format "%s-cloudsearch-load-%s"
+                                       prefix
                                        (name stage))
         cloudsearch-queue (sqs/queue {::sqs.q/queue-name cloudsearch-queue-name})
         cs-queue->lambda (lambda/event-source-mapping {::lambda/event-source-arn (c/xref (keyword cloudsearch-queue-name)
@@ -85,8 +82,11 @@
   []
   (try
     (let [cf-client (aws/client {:api :cloudformation})
+          stage (keyword (or (get (System/getenv) "STAGE")
+                             (get (ion/get-env) :env)
+                             "development"))
           stack-name (format "%s-%s" PREFIX (name stage))
-          template (make-template)
+          template (make-template stage PREFIX)
           create-result (create-or-update cf-client stack-name template)]
       (if (:ErrorResponse create-result)
         (when-not (= (get-in create-result [:ErrorResponse :Error :Message])
