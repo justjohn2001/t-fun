@@ -18,12 +18,13 @@
                                        prefix
                                        (name stage))
         cloudsearch-queue (sqs/queue {::sqs.q/queue-name cloudsearch-queue-name})
+        lambda-name (format "%s-cloudsearch-locations" (get (ion/get-app-info) :deployment-group))
         cs-queue->lambda (lambda/event-source-mapping {::lambda/event-source-arn (c/xref (keyword cloudsearch-queue-name)
                                                                                          :arn)
-                                                       ::lambda/function-name ""
+                                                       ::lambda/function-name lambda-name
                                                        ::lambda/batch-size 1})]
     (-> {:tfun-cloudsearch-load cloudsearch-queue
-         #_#_:tfun-cloudsearch-load-esm cs-queue->lambda}
+         :tfun-cloudsearch-load-esm cs-queue->lambda}
         (c/template "Resources to support t-fun")
         e/encode)))
 
@@ -79,12 +80,9 @@
                     (recur)))))))
 
 (defn build-stack
-  []
+  [stage]
   (try
     (let [cf-client (aws/client {:api :cloudformation})
-          stage (keyword (or (get (System/getenv) "STAGE")
-                             (get (ion/get-env) :env)
-                             "development"))
           stack-name (format "%s-%s" PREFIX (name stage))
           template (make-template stage PREFIX)
           create-result (create-or-update cf-client stack-name template)]
@@ -99,7 +97,11 @@
     (catch Exception e
       e)))
 
-(def stack-error (future (str (UUID/randomUUID) "\n" (pr-str (make-template)))))
+(def stack-error (future
+                   (let [stage (keyword (or (get (System/getenv) "STAGE")
+                                            (get (ion/get-env) :env)
+                                            "development"))]
+                     (str (UUID/randomUUID) "\n" (pr-str (make-template stage PREFIX))))))
 
 (defn stack-state
   [{:keys [input] :as params}]
