@@ -1,8 +1,17 @@
 {:app-name "datomic-cloud-development"
 
  :allow [
-         t-fun.core/echo]
+         t-fun.core/echo
+         t-fun.infrastructure/stack-state
+         t-fun.cloudsearch-load/load-docs-to-cloudsearch]
 
  :lambdas {:echo {:fn t-fun.core/echo
                   :description "Echos request back"
-                  :concurrency-limit 1}}}
+                  :concurrency-limit 1}
+           :stack-state {:fn t-fun.infrastructure/stack-state
+                         :description "Returns the state of the Cloudformation stack creation"
+                         :concurrency-limit 1}
+           :cloudsearch-locations {:fn t-fun.cloudsearch-load/load-docs-to-cloudsearch
+                                   :description "Target for SQS queue which loads location documents to Cloudsearch"
+                                   :concurrency-limit 1}
+           }}
