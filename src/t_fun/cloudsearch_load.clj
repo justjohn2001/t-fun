@@ -17,16 +17,6 @@
 
 (def region "us-east-1")
 
-(def datomic-config (future (let [stage-str (name @core/stage)]
-                              {:server-type :ion
-                               :region region
-                               :system (format "datomic-cloud-%s" stage-str)
-                               :endpoint (format "http://entry.datomic-cloud-%s.us-east-1.datomic.net:8182/" stage-str)})))
-
-(def dt-conn (-> @datomic-config
-                 d/client
-                 (d/connect {:db-name "rk"})))
-
 (def attribute->entity
   {:rk.location/hotel-count :place
    :rk.place/id :place
@@ -221,45 +211,54 @@
 
 (defn load-docs-to-cloudsearch
   [{:keys [input]}]
-  input)
+  (let [datomic-config (let [stage-str (name @core/stage)]
+                         {:server-type :ion
+                          :region region
+                          :system (format "datomic-cloud-%s" stage-str)
+                          :endpoint (format "http://entry.datomic-cloud-%s.us-east-1.datomic.net:8182/" stage-str)})
+        dt-conn (-> datomic-config
+                    d/client
+                    (d/connect {:db-name "rk"}))]
+    input))
+
 
 #_(doseq [batch (partition-all 1000 updates)]
-(log/infof "Processing batch of %d updates" (count batch))
-(let [deletes (into {}
-                    (comp (map first)
-                          (map #(let [id (string/replace % " " "-")] [id {:type "delete" :id id}])))
-                    (d/q '[:find ?id
-                           :in $ [?e ...]
-                           :where [?e :rk.place/id ?id]]
-                         (d/history db)
-                         batch))
-      location-data (map first (d/q '[:find (pull ?id [:db/id
-                                                       :rk.place/id
-                                                       :iata/airport-code
-                                                       :rk.place/display-name
-                                                       :rk.location/hotel-count
-                                                       :rk.geo/latitude
-                                                       :rk.geo/longitude
-                                                       :rk.place/name
-                                                       :rk.place/type
+    (log/infof "Processing batch of %d updates" (count batch))
+    (let [deletes (into {}
+                        (comp (map first)
+                              (map #(let [id (string/replace % " " "-")] [id {:type "delete" :id id}])))
+                        (d/q '[:find ?id
+                               :in $ [?e ...]
+                               :where [?e :rk.place/id ?id]]
+                             (d/history db)
+                             batch))
+          location-data (map first (d/q '[:find (pull ?id [:db/id
+                                                           :rk.place/id
+                                                           :iata/airport-code
+                                                           :rk.place/display-name
+                                                           :rk.location/hotel-count
+                                                           :rk.geo/latitude
+                                                           :rk.geo/longitude
+                                                           :rk.place/name
+                                                           :rk.place/type
 
-                                                       {:rk.place/country [:rk.country/code
-                                                                           :rk.country/name]}
-                                                       {:rk.place/region [:rk.region/name
-                                                                          :rk.region/code]}
-                                                       ])
-                                      :in $ [?id ...]
-                                      :where [?id :rk.place/id _]]
-                                    db
-                                    batch))]
-  (-> deletes
-      (merge (into {}
-                   (comp
-                    (mapcat #(cond-> [%]
-                               (get-in % [:rk.place/region :rk.region/code])
-                               (conj (make-alt-location %))))
-                    (map (juxt #(or (:alt-id %) (:rk.place/id %)) datomic->aws)))
-                   location-data))
-      vals
-      (->> (upload-docs doc-client)))))
+                                                           {:rk.place/country [:rk.country/code
+                                                                               :rk.country/name]}
+                                                           {:rk.place/region [:rk.region/name
+                                                                              :rk.region/code]}
+                                                           ])
+                                          :in $ [?id ...]
+                                          :where [?id :rk.place/id _]]
+                                        db
+                                        batch))]
+      (-> deletes
+          (merge (into {}
+                       (comp
+                        (mapcat #(cond-> [%]
+                                   (get-in % [:rk.place/region :rk.region/code])
+                                   (conj (make-alt-location %))))
+                        (map (juxt #(or (:alt-id %) (:rk.place/id %)) datomic->aws)))
+                       location-data))
+          vals
+          (->> (upload-docs doc-client)))))
 
