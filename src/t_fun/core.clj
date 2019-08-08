@@ -4,7 +4,12 @@
             [t-fun.infrastructure :as i]
             [clojure.string :as string]))
 
+(def stage (future (keyword (or (get (System/getenv) "STAGE")
+                                (get (ion/get-env) :env)
+                                "test"))))
+
 (defn echo
   [{:keys [input] :as params}]
-  (string/join "\n" [@i/stack
+  (string/join "\n" [@i/stack-error
                      (pr-str (or input params))]))
+
