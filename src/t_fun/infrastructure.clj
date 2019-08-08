@@ -29,7 +29,7 @@
                                                     ::lambda/batch-size 1}))
 
 (def topology (-> {:tfun-cloudsearch-load cloudsearch-queue
-                   :tfun-cloudsearch-load-esm cs-queue->lambda}
+                   #_#_:tfun-cloudsearch-load-esm cs-queue->lambda}
                   (c/template "Resources to support t-fun")
                   e/encode))
 
