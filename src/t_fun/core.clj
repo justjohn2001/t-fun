@@ -6,7 +6,7 @@
 
 (def stage (future (keyword (or (get (System/getenv) "STAGE")
                                 (get (ion/get-env) :env)
-                                "test"))))
+                                "development"))))
 
 (defn echo
   [{:keys [input] :as params}]

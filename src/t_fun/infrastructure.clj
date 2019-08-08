@@ -11,27 +11,24 @@
   (:import java.util.UUID))
 
 
-(def PREFIX "tfun")
-
-(def stage (keyword (or (get (System/getenv) "STAGE")
-                        (get (ion/get-env) :env)
-                        "test")))
-
-(def cloudsearch-queue-name (format "%s-cloudsearch-load-%s"
-                                    PREFIX
-                                    (name stage)))
-
-(def cloudsearch-queue (sqs/queue {::sqs.q/queue-name cloudsearch-queue-name}))
-
-(def cs-queue->lambda (lambda/event-source-mapping {::lambda/event-source-arn (c/xref (keyword cloudsearch-queue-name)
-                                                                                      :arn)
-                                                    ::lambda/function-name ""
-                                                    ::lambda/batch-size 1}))
-
-(def topology (-> {:tfun-cloudsearch-load cloudsearch-queue
-                   #_#_:tfun-cloudsearch-load-esm cs-queue->lambda}
-                  (c/template "Resources to support t-fun")
-                  e/encode))
+(defn make-template
+  []
+  (let [PREFIX "tfun"
+        stage (keyword (or (get (System/getenv) "STAGE")
+                           (get (ion/get-env) :env)
+                           "development"))
+        cloudsearch-queue-name (format "%s-cloudsearch-load-%s"
+                                       PREFIX
+                                       (name stage))
+        cloudsearch-queue (sqs/queue {::sqs.q/queue-name cloudsearch-queue-name})
+        cs-queue->lambda (lambda/event-source-mapping {::lambda/event-source-arn (c/xref (keyword cloudsearch-queue-name)
+                                                                                         :arn)
+                                                       ::lambda/function-name ""
+                                                       ::lambda/batch-size 1})]
+    (-> {:tfun-cloudsearch-load cloudsearch-queue
+         #_#_:tfun-cloudsearch-load-esm cs-queue->lambda}
+        (c/template "Resources to support t-fun")
+        e/encode)))
 
 (defn invoke-with-throttle-retry
   [{:keys [args retries sleep]
@@ -89,7 +86,8 @@
   (try
     (let [cf-client (aws/client {:api :cloudformation})
           stack-name (format "%s-%s" PREFIX (name stage))
-          create-result (create-or-update cf-client stack-name topology)]
+          template (make-template)
+          create-result (create-or-update cf-client stack-name template)]
       (if (:ErrorResponse create-result)
         (when-not (= (get-in create-result [:ErrorResponse :Error :Message])
                      "No updates are to be performed.")
@@ -101,7 +99,7 @@
     (catch Exception e
       e)))
 
-(def stack-error (future (str (UUID/randomUUID) "\n" (pr-str topology))))
+(def stack-error (future (str (UUID/randomUUID) "\n" (pr-str (make-template)))))
 
 (defn stack-state
   [{:keys [input] :as params}]
