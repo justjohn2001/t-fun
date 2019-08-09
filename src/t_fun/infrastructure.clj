@@ -7,16 +7,13 @@
             [crucible.aws.lambda :as lambda]
             [crucible.encoding :as e]
             [clojure.tools.logging :as log]
-            [datomic.ion :as ion])
+            [datomic.ion :as ion]
+            [datomic.ion.cast :as cast])
   (:import java.util.UUID))
 
-(def PREFIX "tfun")
-
 (defn make-template
-  [stage prefix]
-  (let [cloudsearch-queue-name (format "%s-cloudsearch-load-%s"
-                                       prefix
-                                       (name stage))
+  [prefix]
+  (let [cloudsearch-queue-name (format "%s-cloudsearch-load" prefix)
         cloudsearch-queue (sqs/queue {::sqs.q/queue-name cloudsearch-queue-name})
         lambda-name (format "%s-cloudsearch-locations" (get (ion/get-app-info) :deployment-group))
         cs-queue->lambda (lambda/event-source-mapping {::lambda/event-source-arn (c/xref (keyword cloudsearch-queue-name)
@@ -51,15 +48,17 @@
   (log/infof "Creating stack %s" stack-name)
   (let [response (cf-describe cf-client stack-name)]
     (cond
-      (:Stacks response) (invoke-with-throttle-retry {:args [cf-client
-                                                             {:op :UpdateStack
-                                                              :request {:StackName stack-name
-                                                                        :TemplateBody template}}]})
+      (:Stacks response) (do (cast/event {:msg "INFRASTRUCTURE - updating existing stack"})
+                             (invoke-with-throttle-retry {:args [cf-client
+                                                                 {:op :UpdateStack
+                                                                  :request {:StackName stack-name
+                                                                            :TemplateBody template}}]}))
       (re-find (re-pattern "does not exist") (get-in response [:ErrorResponse :Error :Message]))
-      (invoke-with-throttle-retry {:args [cf-client
-                                          {:op :CreateStack
-                                           :request {:StackName stack-name
-                                                     :TemplateBody template}}]})
+      (do (cast/event "INFRASTRUCTURE - creating new stack")
+          (invoke-with-throttle-retry {:args [cf-client
+                                              {:op :CreateStack
+                                               :request {:StackName stack-name
+                                                         :TemplateBody template}}]}))
 
       :else (throw (ex-info "unknown response creating stack" response)))))
 
@@ -80,11 +79,11 @@
                     (recur)))))))
 
 (defn build-stack
-  [stage]
+  [prefix]
   (try
     (let [cf-client (aws/client {:api :cloudformation})
-          stack-name (format "%s-%s" PREFIX (name stage))
-          template (make-template stage PREFIX)
+          stack-name (format "%s-infrastructure" prefix)
+          template (make-template prefix)
           create-result (create-or-update cf-client stack-name template)]
       (if (:ErrorResponse create-result)
         (when-not (= (get-in create-result [:ErrorResponse :Error :Message])
@@ -98,10 +97,13 @@
       e)))
 
 (def stack-error (future
-                   (let [stage (keyword (or (get (System/getenv) "STAGE")
-                                            (get (ion/get-env) :env)
-                                            "development"))]
-                     (build-stack stage))))
+                   (let [deployment-group (:deployment-group (ion/get-app-info))
+                         _ (cast/event {:msg "INFRASTRUCTURE - Starting stack build"})
+                         result (build-stack deployment-group)]
+                     (if result
+                       (cast/alert (:msg "INFRASTRUCTURE - Stack build result" ::result result))
+                       (cast/event {:msg "INFRASTRUCTURE - Stack created/updated successfully"}))
+                     result)))
 
 (defn stack-state
   [{:keys [input] :as params}]
