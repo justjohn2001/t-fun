@@ -99,7 +99,7 @@
 (def stack-error (future
                    (let [deployment-group (:deployment-group (ion/get-app-info))
                          _ (cast/event {:msg "INFRASTRUCTURE - Starting stack build"})
-                         result (build-stack deployment-group)]
+                         result (build-stack (format "tfun-%s" deployment-group))]
                      (if result
                        (cast/alert {:msg "INFRASTRUCTURE - Stack build result" ::result result})
                        (cast/event {:msg "INFRASTRUCTURE - Stack created/updated successfully"}))
