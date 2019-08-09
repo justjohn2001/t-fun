@@ -54,7 +54,7 @@
                                                                   :request {:StackName stack-name
                                                                             :TemplateBody template}}]}))
       (re-find (re-pattern "does not exist") (get-in response [:ErrorResponse :Error :Message]))
-      (do (cast/event "INFRASTRUCTURE - creating new stack")
+      (do {cast/event (:msg "INFRASTRUCTURE - creating new stack")}
           (invoke-with-throttle-retry {:args [cf-client
                                               {:op :CreateStack
                                                :request {:StackName stack-name
