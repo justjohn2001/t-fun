@@ -1,4 +1,4 @@
-{:app-name "datomic-cloud-development"
+{:app-name "t-fun"
 
  :allow [
          t-fun.core/echo

@@ -1,14 +1,16 @@
 (ns t-fun.infrastructure
-  (:require [cognitect.aws.client.api :as aws]
-            [cognitect.aws.util :as aws.util]
-            [crucible.core :as c]
-            [crucible.aws.sqs :as sqs]
-            [crucible.aws.sqs.queue :as sqs.q]
-            [crucible.aws.lambda :as lambda]
-            [crucible.encoding :as e]
-            [clojure.tools.logging :as log]
-            [datomic.ion :as ion]
-            [datomic.ion.cast :as cast])
+  (:require
+   [cheshire.core :as json]
+   [clojure.tools.logging :as log]
+   [cognitect.aws.client.api :as aws]
+   [cognitect.aws.util :as aws.util]
+   [crucible.core :as c]
+   [crucible.aws.sqs :as sqs]
+   [crucible.aws.sqs.queue :as sqs.q]
+   [crucible.aws.lambda :as lambda]
+   [crucible.encoding :as e]
+   [datomic.ion :as ion]
+   [datomic.ion.cast :as cast])
   (:import java.util.UUID))
 
 (defn make-template
@@ -108,3 +110,51 @@
 (defn stack-state
   [{:keys [input] :as params}]
   (pr-str (or @stack-error "OK")))
+
+(def tfun-query-group-policies
+  [{"PolicyName" "RoomkeyTfunSQSAccess"
+    "PolicyDocument" {"Version" "2012-10-17"
+                      "Statement" [{"Effect" "Allow"
+                                    "Action" ["sqs:ReceiveMessage"
+                                              "sqs:DeleteMessage" "sqs:DeleteMessageBatch"
+                                              "sqs:SendMessage" "sqs:SendMessageBatch"]
+                                    "Resource" ["arn:aws:sqs:*:*:tfun-*"]}]}}])
+
+(defn adjust-deployment-group
+  [cf-client deployment-group]
+  (let [
+        {:keys [Parameters Capabilities]} (-> (aws/invoke cf-client {:op :DescribeStacks :request {:StackName deployment-group}})
+                                              (get-in [:Stacks 0]))
+        template (aws/invoke cf-client
+                             {:op :GetTemplate
+                              :request {:StackName deployment-group}})
+        adjusted-template (-> template
+                              :TemplateBody
+                              json/decode
+                              (update-in ["Resources" "DatomicLambdaRole" "Properties" "Policies"]
+                                         (fn [policies]
+                                           (into []
+                                                 (filter #(not (re-find #"RoomkeyTfun.*"
+                                                                        (get-in % ["PolicyName"])))
+                                                         policies))))               ;; remove any existing Tfun policies
+                              (update-in ["Resources" "DatomicLambdaRole" "Properties" "Policies"]
+                                         concat
+                                         tfun-query-group-policies)          ;; add the current policies
+                              json/encode)
+        s3-client (aws/client {:api :s3})
+        bucket-name "rk-persist"
+        key-name (format "tfun/template/%s-%08x" deployment-group (hash adjusted-template))]
+    (when (not= (json/encode template) adjusted-template)
+      (cast/event {:msg "INFRASTRUCTURE - Updating query group stack" ::bucket bucket-name ::key-name key-name})
+      (aws/invoke s3-client
+                  {:op :PutObject
+                   :request {:Bucket bucket-name
+                             :Key key-name
+                             :Body adjusted-template
+                             }})
+      (aws/invoke cf-client
+                  {:op :UpdateStack
+                   :request {:StackName deployment-group
+                             :TemplateURL (format "https://s3.amazonaws.com/%s/%s" bucket-name key-name)
+                             :Parameters Parameters
+                             :Capabilities Capabilities}}))))
