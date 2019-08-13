@@ -74,6 +74,7 @@
       (let [stack (cf-describe cf-client stack-name)
             status (get-in stack [:Stacks 0 :StackStatus])]
         (cond
+          (:ErrorResponse stack) stack
           (#{"CREATE_COMPLETE" "UPDATE_COMPLETE"} status) nil
           (#{"ROLLBACK_COMPLETE" "UPDATE_ROLLBACK_COMPLETE"} status) :failed
           (> (System/currentTimeMillis) end-time) (format "Timeout waiting. Status %s" status)
