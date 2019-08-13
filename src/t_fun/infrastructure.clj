@@ -76,7 +76,7 @@
         (cond
           (#{"CREATE_COMPLETE" "UPDATE_COMPLETE"} status) nil
           (#{"ROLLBACK_COMPLETE" "UPDATE_ROLLBACK_COMPLETE"} status) :failed
-          (> (System/currentTimeMillis) end-time) :timeout
+          (> (System/currentTimeMillis) end-time) (format "Timeout waiting. Status %s" status)
           :else (do (Thread/sleep interval)
                     (recur)))))))
 
