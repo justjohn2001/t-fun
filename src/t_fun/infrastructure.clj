@@ -56,7 +56,7 @@
                                                                   :request {:StackName stack-name
                                                                             :TemplateBody template}}]}))
       (re-find (re-pattern "does not exist") (get-in response [:ErrorResponse :Error :Message]))
-      (do {cast/event (:msg "INFRASTRUCTURE - creating new stack")}
+      (do (cast/event (:msg "INFRASTRUCTURE - creating new stack"))
           (invoke-with-throttle-retry {:args [cf-client
                                               {:op :CreateStack
                                                :request {:StackName stack-name
@@ -66,11 +66,11 @@
 
 (defn wait
   [cf-client stack-name]
+  (cast/event {:msg (format "INFRASTRUCTURE - waiting on %s" stack-name)})
   (let [duration (* 10 60 1000)                           ;; 10 minutes
         interval (* 10 1000)                              ;; check every 10 seconds
         end-time (+ (System/currentTimeMillis) duration)]
     (loop []
-      (log/info "Waiting")
       (let [stack (cf-describe cf-client stack-name)
             status (get-in stack [:Stacks 0 :StackStatus])]
         (cond
@@ -83,6 +83,7 @@
 (defn build-stack
   [cf-client deployment-group]
   (try
+    (cast/event {:msg "INFRASTRUCTURE - build-stack"})
     (let [stack-name (format "%s-infrastructure" deployment-group)
           template (make-template deployment-group)
           create-result (create-or-update cf-client stack-name template)]
@@ -122,6 +123,7 @@
 
 (defn adjust-deployment-group
   [cf-client deployment-group]
+  (cast/event {:msg "INFRASTRUCTURE - adjust-deployment-group"})
   (let [
         {:keys [Parameters Capabilities]} (-> (aws/invoke cf-client {:op :DescribeStacks :request {:StackName deployment-group}})
                                               (get-in [:Stacks 0]))
@@ -150,24 +152,13 @@
                        ::update-result update-result})
           update-result)))))
 
-(defn build-steps
-  [deployment-group]
-  (some-fn
-   #((cast/event "Waiting for deployment-group")
-     (wait % deployment-group))
-   #((cast/event "Adjusting deployment group")
-     (adjust-deployment-group % deployment-group))
-   #((cast/event "Waiting for deployment group to stablize")
-     (wait % deployment-group))
-   #((cast/event "Bulding infrastructure stack")
-     (build-stack % deployment-group))))
-
 (def stack-error
   (fn []
     (let [deployment-group (or (:deployment-group (ion/get-app-info)) "dc-development-compute-main")
           cf-client (aws/client {:api :cloudformation})
           _ (cast/event {:msg (format "INFRASTRUCTURE - Stack updates starting on %s" deployment-group)})
-          result ((build-steps deployment-group) cf-client)]
+          result (some #(% cf-client deployment-group)
+                       [wait adjust-deployment-group wait build-stack])]
       (if result
         (cast/alert {:msg "INFRASTRUCTURE - Stack build result" ::result result})
         (cast/event {:msg "INFRASTRUCTURE - Stack created/updated successfully"}))
