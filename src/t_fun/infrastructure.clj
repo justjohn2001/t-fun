@@ -74,42 +74,26 @@
       (let [stack (cf-describe cf-client stack-name)
             status (get-in stack [:Stacks 0 :StackStatus])]
         (cond
-          (#{"CREATE_COMPLETE" "UPDATE_COMPLETE"} status) "Success"
-          (#{"ROLLBACK_COMPLETE" "UPDATE_ROLLBACK_COMPLETE"} status) "Failed"
-          (> (System/currentTimeMillis) end-time) "Timeout"
+          (#{"CREATE_COMPLETE" "UPDATE_COMPLETE"} status) nil
+          (#{"ROLLBACK_COMPLETE" "UPDATE_ROLLBACK_COMPLETE"} status) :failed
+          (> (System/currentTimeMillis) end-time) :timeout
           :else (do (Thread/sleep interval)
                     (recur)))))))
 
 (defn build-stack
-  [prefix]
+  [cf-client deployment-group]
   (try
-    (let [cf-client (aws/client {:api :cloudformation})
-          stack-name (format "%s-infrastructure" prefix)
-          template (make-template prefix)
+    (let [stack-name (format "%s-infrastructure" deployment-group)
+          template (make-template deployment-group)
           create-result (create-or-update cf-client stack-name template)]
-      (if (:ErrorResponse create-result)
-        (when-not (= (get-in create-result [:ErrorResponse :Error :Message])
-                     "No updates are to be performed.")
-          create-result)
-        (let [result (wait cf-client stack-name)]
-          (if (= result "Success")
-            nil
-            result))))
+      (if (and (:ErrorResponse create-result)
+               (not= (get-in create-result [:ErrorResponse :Error :Message])
+                     "No updates are to be performed."))
+        create-result
+        (when-let [result (wait cf-client stack-name)]
+          (format "%s waiting for %s to stablize" (name result) stack-name))))
     (catch Exception e
       e)))
-
-(def stack-error (future
-                   (let [deployment-group (:deployment-group (ion/get-app-info))
-                         _ (cast/event {:msg "INFRASTRUCTURE - Starting stack build"})
-                         result (build-stack (format "tfun-%s" deployment-group))]
-                     (if result
-                       (cast/alert {:msg "INFRASTRUCTURE - Stack build result" ::result result})
-                       (cast/event {:msg "INFRASTRUCTURE - Stack created/updated successfully"}))
-                     result)))
-
-(defn stack-state
-  [{:keys [input] :as params}]
-  (pr-str (or @stack-error "OK")))
 
 (def tfun-query-group-policies
   [{"PolicyName" "RoomkeyTfunSQSAccess"
@@ -120,6 +104,22 @@
                                               "sqs:SendMessage" "sqs:SendMessageBatch"]
                                     "Resource" ["arn:aws:sqs:*:*:tfun-*"]}]}}])
 
+(defn adjust-template
+  [template]
+  (-> template
+      :TemplateBody
+      json/decode
+      (update-in ["Resources" "DatomicLambdaRole" "Properties" "Policies"]
+                 (fn [policies]
+                   (into []
+                         (filter #(not (re-find #"RoomkeyTfun.*"
+                                                (get-in % ["PolicyName"])))
+                                 policies)))) ;; remove any existing Tfun policies
+      (update-in ["Resources" "DatomicLambdaRole" "Properties" "Policies"]
+                 concat
+                 tfun-query-group-policies) ;; add the current policies
+      json/encode))
+
 (defn adjust-deployment-group
   [cf-client deployment-group]
   (let [
@@ -128,19 +128,7 @@
         template (aws/invoke cf-client
                              {:op :GetTemplate
                               :request {:StackName deployment-group}})
-        adjusted-template (-> template
-                              :TemplateBody
-                              json/decode
-                              (update-in ["Resources" "DatomicLambdaRole" "Properties" "Policies"]
-                                         (fn [policies]
-                                           (into []
-                                                 (filter #(not (re-find #"RoomkeyTfun.*"
-                                                                        (get-in % ["PolicyName"])))
-                                                         policies))))               ;; remove any existing Tfun policies
-                              (update-in ["Resources" "DatomicLambdaRole" "Properties" "Policies"]
-                                         concat
-                                         tfun-query-group-policies)          ;; add the current policies
-                              json/encode)
+        adjusted-template (adjust-template template)
         s3-client (aws/client {:api :s3})
         bucket-name "rk-persist"
         key-name (format "tfun/template/%s-%08x" deployment-group (hash adjusted-template))]
@@ -150,11 +138,40 @@
                   {:op :PutObject
                    :request {:Bucket bucket-name
                              :Key key-name
-                             :Body adjusted-template
-                             }})
-      (aws/invoke cf-client
-                  {:op :UpdateStack
-                   :request {:StackName deployment-group
-                             :TemplateURL (format "https://s3.amazonaws.com/%s/%s" bucket-name key-name)
-                             :Parameters Parameters
-                             :Capabilities Capabilities}}))))
+                             :Body adjusted-template}})
+      (let [update-result (aws/invoke cf-client
+                                      {:op :UpdateStack
+                                       :request {:StackName deployment-group
+                                                 :TemplateURL (format "https://s3.amazonaws.com/%s/%s" bucket-name key-name)
+                                                 :Parameters Parameters
+                                                 :Capabilities Capabilities}})]
+        (when [:ErrorResponse update-result]
+          (cast/alert {:msg (format "INFRASTRUCTURE - error updating %s" deployment-group)
+                       ::update-result update-result})
+          update-result)))))
+
+(defn build-steps
+  [deployment-group]
+  (some-fn
+   #((cast/event "Waiting for deployment-group")
+     (wait % deployment-group))
+   #((cast/event "Adjusting deployment group")
+     (adjust-deployment-group % deployment-group))
+   #((cast/event "Waiting for deployment group to stablize")
+     (wait % deployment-group))
+   #((cast/event "Bulding infrastructure stack")
+     (build-stack % deployment-group))))
+
+(def stack-error
+  (future
+    (let [deployment-group (or (:deployment-group (ion/get-app-info)) "dc-development-compute-main")
+          cf-client (aws/client {:api :cloudformation})
+          result ((build-steps deployment-group) cf-client)]
+      (if result
+        (cast/alert {:msg "INFRASTRUCTURE - Stack build result" ::result result})
+        (cast/event {:msg "INFRASTRUCTURE - Stack created/updated successfully"}))
+      result)))
+
+(defn stack-state
+  [{:keys [input] :as params}]
+  (pr-str (or @stack-error "OK")))
