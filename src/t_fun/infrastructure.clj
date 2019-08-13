@@ -163,9 +163,10 @@
      (build-stack % deployment-group))))
 
 (def stack-error
-  (future
+  (fn []
     (let [deployment-group (or (:deployment-group (ion/get-app-info)) "dc-development-compute-main")
           cf-client (aws/client {:api :cloudformation})
+          _ (cast/event {:msg (format "INFRASTRUCTURE - Stack updates starting on %s" deployment-group)})
           result ((build-steps deployment-group) cf-client)]
       (if result
         (cast/alert {:msg "INFRASTRUCTURE - Stack build result" ::result result})
@@ -174,4 +175,4 @@
 
 (defn stack-state
   [{:keys [input] :as params}]
-  (pr-str (or @stack-error "OK")))
+  (pr-str (or (stack-error) "OK")))
