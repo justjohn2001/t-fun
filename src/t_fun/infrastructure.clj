@@ -131,7 +131,8 @@
   (let [{error-response :ErrorResponse
          [{:keys [Parameters Capabilities]}] :Stacks
          :as response} (cf-describe cf-client deployment-group)]
-    (if error-response
+    (cast/event {:msg "INFRASTRUCTURE - response from cf-describe" ::response response})
+    (if (:ErrorResponse response)
       response
       (let [
             template (aws/invoke cf-client
