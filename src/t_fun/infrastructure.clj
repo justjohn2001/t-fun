@@ -50,13 +50,16 @@
   (log/infof "Creating stack %s" stack-name)
   (let [response (cf-describe cf-client stack-name)]
     (cond
-      (:Stacks response) (do (cast/event {:msg "INFRASTRUCTURE - updating existing stack"})
-                             (invoke-with-throttle-retry {:args [cf-client
-                                                                 {:op :UpdateStack
-                                                                  :request {:StackName stack-name
-                                                                            :TemplateBody template}}]}))
+      (:Stacks response)
+      (do (cast/event {:msg "INFRASTRUCTURE - updating existing stack"})
+          (invoke-with-throttle-retry {:args [cf-client
+                                              {:op :UpdateStack
+                                               :request {:StackName stack-name
+                                                         :TemplateBody template
+                                                         :RoleARN "arn:aws:iam::304062982811:role/dc-development-compute-main-DatomicLambdaRole-2GS03HOYZEWU"}}]}))
+
       (re-find (re-pattern "does not exist") (get-in response [:ErrorResponse :Error :Message]))
-      (do (cast/event (:msg "INFRASTRUCTURE - creating new stack"))
+      (do (cast/event {:msg "INFRASTRUCTURE - creating new stack"})
           (invoke-with-throttle-retry {:args [cf-client
                                               {:op :CreateStack
                                                :request {:StackName stack-name
@@ -85,7 +88,7 @@
   [cf-client deployment-group]
   (try
     (cast/event {:msg "INFRASTRUCTURE - build-stack"})
-    (let [stack-name (format "%s-infrastructure" deployment-group)
+    (let [stack-name (format "tfun-%s-infrastructure" deployment-group)
           template (make-template deployment-group)
           create-result (create-or-update cf-client stack-name template)]
       (if (and (:ErrorResponse create-result)
@@ -148,7 +151,9 @@
                                                  :TemplateURL (format "https://s3.amazonaws.com/%s/%s" bucket-name key-name)
                                                  :Parameters Parameters
                                                  :Capabilities Capabilities}})]
-        (when [:ErrorResponse update-result]
+        (when (and (:ErrorResponse update-result)
+                   (not= (get-in update-result [:ErrorResponse :Error :Message])
+                         "No updates are to be performed."))
           (cast/alert {:msg (format "INFRASTRUCTURE - error updating %s" deployment-group)
                        ::update-result update-result})
           update-result)))))
