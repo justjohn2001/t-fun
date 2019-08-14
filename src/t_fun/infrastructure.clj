@@ -149,7 +149,7 @@
                                       {:op :UpdateStack
                                        :request {:StackName deployment-group
                                                  :TemplateURL (format "https://s3.amazonaws.com/%s/%s" bucket-name key-name)
-                                                 :Parameters Parameters
+                                                 #_#_:Parameters Parameters
                                                  :Capabilities Capabilities}})]
         (when (and (:ErrorResponse update-result)
                    (not= (get-in update-result [:ErrorResponse :Error :Message])
