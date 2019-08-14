@@ -106,7 +106,7 @@
   [{"PolicyName" "RoomkeyTfunSQSAccess"
     "PolicyDocument" {"Version" "2012-10-17"
                       "Statement" [{"Effect" "Allow"
-                                    "Action" ["sqs:ReceiveMessage"
+                                    "Action" ["sqs:ReceiveMessage" "sqs:GetQueueAttributes"
                                               "sqs:DeleteMessage" "sqs:DeleteMessageBatch"
                                               "sqs:SendMessage" "sqs:SendMessageBatch"]
                                     "Resource" ["arn:aws:sqs:*:*:t-fun-*"]}]}}])
