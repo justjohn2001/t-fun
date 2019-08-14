@@ -45,6 +45,8 @@
   (invoke-with-throttle-retry {:args [cf-client {:op :DescribeStacks
                                                  :request {:StackName stack-name}}]}))
 
+(def default-arn-role "arn:aws:iam::304062982811:role/CfAdministratorAccess")
+
 (defn create-or-update
   [cf-client stack-name template]
   (log/infof "Creating stack %s" stack-name)
@@ -55,15 +57,15 @@
           (invoke-with-throttle-retry {:args [cf-client
                                               {:op :UpdateStack
                                                :request {:StackName stack-name
-                                                         :TemplateBody template
-                                                         :RoleARN "arn:aws:iam::304062982811:role/dc-development-compute-main-us-east-1"}}]}))
+                                                         :TemplateBody template}}]}))
 
       (re-find (re-pattern "does not exist") (get-in response [:ErrorResponse :Error :Message]))
       (do (cast/event {:msg "INFRASTRUCTURE - creating new stack"})
           (invoke-with-throttle-retry {:args [cf-client
                                               {:op :CreateStack
                                                :request {:StackName stack-name
-                                                         :TemplateBody template}}]}))
+                                                         :TemplateBody template
+                                                         :RoleARN default-arn-role}}]}))
 
       :else (throw (ex-info "unknown response creating stack" response)))))
 
@@ -132,7 +134,6 @@
         template (aws/invoke cf-client
                              {:op :GetTemplate
                               :request {:StackName deployment-group}})]
-    (cast/event {:msg "INFRASTRUCTURE - response from cf-describe" ::response response ::template template})
     (cond (:ErrorResponse response) response
           (:ErrorResponse template) template
           :else (let [{:keys [Parameters Capabilities]} (get-in response [:Stacks 0])
