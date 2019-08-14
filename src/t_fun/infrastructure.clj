@@ -128,35 +128,37 @@
 (defn adjust-deployment-group
   [cf-client deployment-group]
   (cast/event {:msg "INFRASTRUCTURE - adjust-deployment-group"})
-  (let [
-        {:keys [Parameters Capabilities]} (-> (aws/invoke cf-client {:op :DescribeStacks :request {:StackName deployment-group}})
-                                              (get-in [:Stacks 0]))
-        template (aws/invoke cf-client
-                             {:op :GetTemplate
-                              :request {:StackName deployment-group}})
-        adjusted-template (adjust-template template)
-        s3-client (aws/client {:api :s3})
-        bucket-name "rk-persist"
-        key-name (format "tfun/template/%s-%08x" deployment-group (hash adjusted-template))]
-    (when (not= (json/encode template) adjusted-template)
-      (cast/event {:msg "INFRASTRUCTURE - Updating query group stack" ::bucket bucket-name ::key-name key-name})
-      (aws/invoke s3-client
-                  {:op :PutObject
-                   :request {:Bucket bucket-name
-                             :Key key-name
-                             :Body adjusted-template}})
-      (let [update-result (aws/invoke cf-client
-                                      {:op :UpdateStack
-                                       :request {:StackName deployment-group
-                                                 :TemplateURL (format "https://s3.amazonaws.com/%s/%s" bucket-name key-name)
-                                                 #_#_:Parameters Parameters
-                                                 :Capabilities Capabilities}})]
-        (when (and (:ErrorResponse update-result)
-                   (not= (get-in update-result [:ErrorResponse :Error :Message])
-                         "No updates are to be performed."))
-          (cast/alert {:msg (format "INFRASTRUCTURE - error updating %s" deployment-group)
-                       ::update-result update-result})
-          update-result)))))
+  (let [{:keys [Parameters Capabilities ErrorResponse] :as response} (-> (cf-describe deployment-group)
+                                                                         (get-in [:Stacks 0]))]
+    (if ErrorResponse
+      response
+      (let [
+            template (aws/invoke cf-client
+                                 {:op :GetTemplate
+                                  :request {:StackName deployment-group}})
+            adjusted-template (adjust-template template)
+            s3-client (aws/client {:api :s3})
+            bucket-name "rk-persist"
+            key-name (format "tfun/template/%s-%08x" deployment-group (hash adjusted-template))]
+        (when (not= (json/encode template) adjusted-template)
+          (cast/event {:msg "INFRASTRUCTURE - Updating query group stack" ::bucket bucket-name ::key-name key-name})
+          (aws/invoke s3-client
+                      {:op :PutObject
+                       :request {:Bucket bucket-name
+                                 :Key key-name
+                                 :Body adjusted-template}})
+          (let [update-result (aws/invoke cf-client
+                                          {:op :UpdateStack
+                                           :request {:StackName deployment-group
+                                                     :TemplateURL (format "https://s3.amazonaws.com/%s/%s" bucket-name key-name)
+                                                     #_#_:Parameters Parameters
+                                                     :Capabilities Capabilities}})]
+            (when (and (:ErrorResponse update-result)
+                       (not= (get-in update-result [:ErrorResponse :Error :Message])
+                             "No updates are to be performed."))
+              (cast/alert {:msg (format "INFRASTRUCTURE - error updating %s" deployment-group)
+                           ::update-result update-result})
+              update-result)))))))
 
 (def stack-error
   (fn []
