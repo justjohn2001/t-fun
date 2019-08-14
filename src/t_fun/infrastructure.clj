@@ -10,7 +10,7 @@
    [crucible.aws.lambda :as lambda]
    [crucible.encoding :as e]
    [datomic.ion :as ion]
-   [datomic.ion.cast :as cast])
+   [t-fun.lib.cast :as cast])
   (:import java.util.UUID))
 
 (defn make-template
@@ -56,7 +56,7 @@
                                               {:op :UpdateStack
                                                :request {:StackName stack-name
                                                          :TemplateBody template
-                                                         :RoleARN "arn:aws:iam::304062982811:role/dc-development-compute-main-DatomicLambdaRole-2GS03HOYZEWU"}}]}))
+                                                         :RoleARN "arn:aws:iam::304062982811:role/dc-development-compute-main-us-east-1"}}]}))
 
       (re-find (re-pattern "does not exist") (get-in response [:ErrorResponse :Error :Message]))
       (do (cast/event {:msg "INFRASTRUCTURE - creating new stack"})
