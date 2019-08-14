@@ -91,7 +91,7 @@
   (try
     (cast/event {:msg "INFRASTRUCTURE - build-stack"})
     (let [stack-name (format "%s-%s-infrastructure" (:app-name (ion/get-app-info)) deployment-group)
-          template (make-template deployment-group)
+          template (make-template stack-name)
           create-result (create-or-update cf-client stack-name template)]
       (if (and (:ErrorResponse create-result)
                (not= (get-in create-result [:ErrorResponse :Error :Message])
@@ -109,7 +109,7 @@
                                     "Action" ["sqs:ReceiveMessage"
                                               "sqs:DeleteMessage" "sqs:DeleteMessageBatch"
                                               "sqs:SendMessage" "sqs:SendMessageBatch"]
-                                    "Resource" ["arn:aws:sqs:*:*:tfun-*"]}]}}])
+                                    "Resource" ["arn:aws:sqs:*:*:t-fun-*"]}]}}])
 
 (defn adjust-template
   [template]
