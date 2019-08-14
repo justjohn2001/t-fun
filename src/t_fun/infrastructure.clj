@@ -128,10 +128,10 @@
 (defn adjust-deployment-group
   [cf-client deployment-group]
   (cast/event {:msg "INFRASTRUCTURE - adjust-deployment-group"})
-  (let [{:keys [Parameters Capabilities ErrorResponse]
-         :as response} (-> (cf-describe cf-client deployment-group)
-                           (get-in [:Stacks 0]))]
-    (if ErrorResponse
+  (let [{error-response :ErrorResponse
+         [{:keys [Parameters Capabilities]}] :Stacks
+         :as response} (cf-describe cf-client deployment-group)]
+    (if error-response
       response
       (let [
             template (aws/invoke cf-client
