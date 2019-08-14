@@ -88,7 +88,7 @@
   [cf-client deployment-group]
   (try
     (cast/event {:msg "INFRASTRUCTURE - build-stack"})
-    (let [stack-name (format "tfun-%s-infrastructure" deployment-group)
+    (let [stack-name (format "%s-%s-infrastructure" (:app-name (ion/get-app-info)) deployment-group)
           template (make-template deployment-group)
           create-result (create-or-update cf-client stack-name template)]
       (if (and (:ErrorResponse create-result)
@@ -128,8 +128,9 @@
 (defn adjust-deployment-group
   [cf-client deployment-group]
   (cast/event {:msg "INFRASTRUCTURE - adjust-deployment-group"})
-  (let [{:keys [Parameters Capabilities ErrorResponse] :as response} (-> (cf-describe deployment-group)
-                                                                         (get-in [:Stacks 0]))]
+  (let [{:keys [Parameters Capabilities ErrorResponse]
+         :as response} (-> (cf-describe cf-client deployment-group)
+                           (get-in [:Stacks 0]))]
     (if ErrorResponse
       response
       (let [
@@ -151,7 +152,7 @@
                                           {:op :UpdateStack
                                            :request {:StackName deployment-group
                                                      :TemplateURL (format "https://s3.amazonaws.com/%s/%s" bucket-name key-name)
-                                                     #_#_:Parameters Parameters
+                                                     :Parameters Parameters
                                                      :Capabilities Capabilities}})]
             (when (and (:ErrorResponse update-result)
                        (not= (get-in update-result [:ErrorResponse :Error :Message])
