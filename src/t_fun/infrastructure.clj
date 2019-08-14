@@ -135,7 +135,7 @@
     (cast/event {:msg "INFRASTRUCTURE - response from cf-describe" ::response response ::template template})
     (cond (:ErrorResponse response) response
           (:ErrorResponse template) template
-          :else (let [{:keys [Parameters Capabilities]} response
+          :else (let [{:keys [Parameters Capabilities]} (get-in response [:Stacks 0])
                       adjusted-template (adjust-template template)
                       s3-client (aws/client {:api :s3})
                       bucket-name "rk-persist"
