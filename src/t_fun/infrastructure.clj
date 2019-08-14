@@ -16,7 +16,8 @@
 (defn make-template
   [prefix]
   (let [cloudsearch-queue-name (format "%s-cloudsearch-load" prefix)
-        cloudsearch-queue (sqs/queue {::sqs.q/queue-name cloudsearch-queue-name})
+        cloudsearch-queue (sqs/queue {::sqs.q/queue-name cloudsearch-queue-name
+                                      ::sqs.q/visibility-timeout 300})
         lambda-name (format "%s-cloudsearch-locations" (get (ion/get-app-info) :deployment-group))
         cs-queue->lambda (lambda/event-source-mapping {::lambda/event-source-arn (c/xref (keyword cloudsearch-queue-name)
                                                                                          :arn)
