@@ -1,6 +1,6 @@
 (ns t-fun.cloudsearch-load
   (:require [cheshire.core :as json]
-            [clojure.core.async :as a]
+            [clojure.edn :as edn]
             [clojure.set :as set]
             [clojure.string :as string]
             [clojure.tools.logging :as log]
@@ -9,13 +9,30 @@
             [datomic.client.api.async :as da]
 
             [clojure.walk :as walk]
-            [datomic.ion.cast :as cast]
+            [t-fun.lib.cast :as cast]
             [datomic.ion :as ion]
-            [t-fun.core :as core])
+            [t-fun.core :as core]
+            [t-fun.infrastructure :as inf])
   (:import (java.time Instant)
            (java.io ByteArrayInputStream)))
 
 (def region "us-east-1")
+
+(defn datomic-config
+  [stage]
+  (let [stage-str (name stage)]
+    {:server-type :ion
+     :region region
+     :system (format "datomic-cloud-%s" stage-str)
+     :endpoint (format "http://dc-%s-compute-main.c0pt3r.local:8182/" stage-str)}))
+
+(defn make-resource-name
+  [s]
+  (let [{:keys [app-name deployment-group]} (ion/get-app-info)]
+    (format "%s-%s-infrastructure-%s"
+            app-name
+            deployment-group
+            s)))
 
 (def attribute->entity
   {:rk.location/hotel-count :place
@@ -108,91 +125,133 @@
 
 (def mem-attribute-ids (memoize get-attribute-ids))
 
-(defn retrieve-transaction
-  [dt-conn start]
-  (let [start-time (Instant/now)
-        location-attributes (into #{} (map :db/id (mem-attribute-ids dt-conn)))
-        it (d/tx-range dt-conn {:start start
-                                :end (inc start)
-                                :timeout 120000})]
-    (when (seq it)
-      (sort-by :added
-               (transduce (comp (map :tx-data)
-                                cat
-                                (filter #(location-attributes
-                                          (:a %))))
-                          conj
-                          []
-                          it)))))
+(defn datomic-transactions
+  [dt-conn tx-id]
+  (cast/dev {:msg (format "Loading tx %d" tx-id)})
+  (when-let [tx (d/tx-range dt-conn
+                            {:start tx-id
+                             :end (inc tx-id)})]
+    (cons (seq tx) (lazy-seq (datomic-transactions dt-conn (inc tx-id))))))
+
+
+(defn take-until
+  "Returns a lazy sequence of successive items from coll until the first value where
+  (pred item) returns logical true. pred must be free of side-effects.
+  Returns a transducer when no collection is provided."
+  {:added "1.0"
+   :static true}
+  ([pred]
+   (fn [rf]
+     (fn
+       ([] (rf))
+       ([result] (rf result))
+       ([result input]
+        (let [new-result (rf result input)]
+          (if (pred input)
+            new-result
+            (reduced new-result)))))))
+  ([pred coll]
+   (lazy-seq
+    (when-let [s (seq coll)]
+      (let [f (first s)]
+        (if (pred f)
+          (cons f (take-while pred (rest s)))
+          f))))))
+
+(defn find-entities
+  [attr-to-find tx-data]
+  (sort-by :added
+           (filter #(contains? attr-to-find (:a %)) tx-data)))
+
+(defn expand-countries-and-regions
+  [dt-conn [entity-type e t t-id]]
+  (case entity-type
+    :place [[e t-id]]
+    :country (d/q '[:find ?e
+                    :in $ ?country-e
+                    :where [?e :rk.place/country ?country-e]]
+                  (-> dt-conn d/db (d/as-of t))
+                  e)
+    :region (d/q '[:find ?e
+                   :in $ ?region-e
+                   :where [?e :rk.place/region ?region-e]]
+                 (-> dt-conn d/db (d/as-of t))
+                 e)))
+
+(defn sqs-send
+  [sqs-client sqs-url op s]
+  (cast/event {:msg (format "Sending batch to sqs to %s" sqs-url)})
+  (aws/invoke sqs-client {:op :SendMessage
+                          :request {:QueueUrl sqs-url
+                                    :MessageBody (format "{:op %s :ids [%s]}" op s)}}))
+
+(defn entity-reducer
+  [dt-conn sqs-client sqs-url start-tx]
+  (fn entity-reducer*
+    ([] {:pending {} :max-t start-tx})
+    ([{:keys [pending max-t]}]
+     (when (not-empty pending)
+       (let [id-map (into {}
+                          (d/q '[:find ?e ?id
+                                 :in $ [?e ...]
+                                 :where [?e :rk.place/id ?id]]
+                               (d/db dt-conn) (keys pending)))
+             updates (vals id-map)
+             deletes (apply dissoc pending (keys id-map))
+             send-result (transduce (comp (partition-all 1000)
+                                          (map pr-str)
+                                          (map (partial sqs-send sqs-client sqs-url :update)))
+                                    conj
+                                    []
+                                    updates)]
+                                        ; TODO - send deletes
+         {:max-t max-t :sent (count updates) :send-results send-result :deleted (count deletes)})))
+    ([acc [e t-val]]
+     (-> acc
+         (update-in [:pending e] (fnil max 0) t-val)
+         (update :max-t max t-val)))))
 
 (defn walk-transactions
-  ([dt-conn start] (walk-transactions dt-conn start 645))
-  ([dt-conn start end]
-   (loop [i start
-          updates {}]
-     (cast/event {:msg (format "looking at tx %d" i)})
-     (if (and end (> i end))
-       {:last-tx (dec i) :updates updates}
-       (let [id->ident (into {}
-                             (map (juxt :db/id :db/ident)
-                                  (mem-attribute-ids dt-conn)))
-             result (try (retrieve-transaction dt-conn i)
-                         (catch Exception e
-                           [e]))]
-         (cond
-           (seq result) (let [updates' (reduce (fn [m {:keys [e a] :as v}]
-                                                 (update m (-> a
-                                                               id->ident
-                                                               attribute->entity)
-                                                         #((fnil conj (sorted-set)) % e)))
-                                               updates
-                                               result)]
-                          (recur (inc i) updates'))
-           (nil? result) {:last-tx (dec i) :updates updates}
-           :else (do
-                   (when (zero? (mod i 100))
-                     (prn i))
-                   (recur (inc i) updates))))))))
-
-(defn all-updates
-  [dt-conn start]
-  (let [{{:keys [country region place] :as updates} :updates :as results} (walk-transactions dt-conn start)
-        db (d/db dt-conn)
-        country-places (set (map first (d/q '{:find [?e]
-                                              :in [$ [?country ...]]
-                                              :where [[?e :rk.place/country ?country]]}
-                                            db
-                                            (or (seq country) []))))
-        region-places (set (map first (d/q '[:find ?e
-                                             :in $ [?region ...]
-                                             :where [?e :rk.place/region ?region]]
-                                           db
-                                           (or (seq region) []))))]
-    (assoc results :updates (set/union place country-places region-places))))
+  [dt-conn start-tx timeout]
+  (let [sqs-client (aws/client {:api :sqs})
+        sqs-url (:QueueUrl (aws/invoke sqs-client
+                                       {:op :GetQueueUrl
+                                        :request {:QueueName (format "%s-%s"
+                                                                     (inf/make-stack-name)
+                                                                     "cloudsearch-load")}}))
+        stop-time (+ (System/currentTimeMillis) timeout)
+        id->ident (into {} (map (juxt :db/id :db/ident)
+                                (mem-attribute-ids dt-conn)))
+        location-attributes (into #{} (map :db/id (mem-attribute-ids dt-conn)))]
+    (transduce (comp (take 1)
+                     (take-until (fn [_] (< (System/currentTimeMillis) stop-time)))
+                     cat
+                     (map (juxt :t #(find-entities location-attributes (:data %))))
+                     (mapcat (fn [[t-id d]]
+                               (map (fn [{:keys [e a t]}]
+                                      (vector (-> a id->ident attribute->entity)
+                                              e t t-id))
+                                    d)))
+                     (mapcat (partial expand-countries-and-regions dt-conn)))
+               (entity-reducer dt-conn sqs-client sqs-url start-tx)
+               (datomic-transactions dt-conn start-tx))))
 
 (defn queue-updates
-  [dt-conn start]
-  (let [sqs-client (aws/client {:api :sqs})
-        queue-url (aws/invoke sqs-client {:op :ListQueues
-                                          :request {:QueueNamePrefix (format "cloudsearch-locations-%s" @core/stage)}})
-        sqs-send-string (fn [s]
-                          (aws/invoke sqs-client {:op :SendMessage
-                                                  :request {:QueueUrl queue-url
-                                                            :MessageBody s}}))
-        SQS_MESSAGE_SIZE 250000         ;; SQS limit is 256K
-        send-reducer (fn [s i]
-                       (if (> (count s) SQS_MESSAGE_SIZE)
-                         (do
-                           (sqs-send-string (format "[%s]" s))
-                           (str i))
-                         (string/join " " [s i])))]
-
-    (->> (reduce send-reducer
-                 {:length 0
-                  :items []}
-                 (all-updates dt-conn start))
-         (format "[%s]")
-         sqs-send-string)))
+  [i]
+  (let [dt-conn (-> (datomic-config @core/stage)
+                    d/client
+                    (d/connect {:db-name "rk"}))
+        [[start-tx e]] [[i nil]] #_(d/q '[:find ?tx ?e
+                                          :where
+                                          [?e :rk/name "Next txid to load into cloudsearch"]
+                                          [?e :rk/tx-id ?tx]]
+                                        (d/db dt-conn))
+        {:keys [max-t sent deleted]} (walk-transactions dt-conn start-tx 0)]
+    #_(d/transact dt-conn
+                  {:tx-data [[:db/add e :rk/tx-id (inc max-t)]]})
+    (let [msg (format "QUEUE-UPDATES: Read through transaction %d. Sent %d updates, %d deletes." max-t sent deleted)]
+      (cast/event {:msg msg})
+      msg)))
 
 (defn upload-docs
   [client rows]
@@ -211,14 +270,11 @@
 
 (defn load-docs-to-cloudsearch
   [{:keys [input]}]
-  (let [datomic-config (let [stage-str (name @core/stage)]
-                         {:server-type :ion
-                          :region region
-                          :system (format "datomic-cloud-%s" stage-str)
-                          :endpoint (format "http://entry.datomic-cloud-%s.us-east-1.datomic.net:8182/" stage-str)})
-        dt-conn (-> datomic-config
+  (let [config (datomic-config @core/stage)
+        dt-conn (-> config
                     d/client
-                    (d/connect {:db-name "rk"}))]
+                    (d/connect {:db-name "rk"}))
+        ids (edn/read-string input)]
     input))
 
 

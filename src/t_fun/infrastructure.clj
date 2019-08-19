@@ -13,6 +13,17 @@
    [t-fun.lib.cast :as cast])
   (:import java.util.UUID))
 
+(def default-arn-role "arn:aws:iam::304062982811:role/CfAdministratorAccess")
+
+(def t-fun-query-group-policies
+  [{"PolicyName" "RoomkeyTfunSQSAccess"
+    "PolicyDocument" {"Version" "2012-10-17"
+                      "Statement" [{"Effect" "Allow"
+                                    "Action" ["sqs:ReceiveMessage" "sqs:GetQueueAttributes"
+                                              "sqs:DeleteMessage" "sqs:DeleteMessageBatch"
+                                              "sqs:SendMessage" "sqs:SendMessageBatch"]
+                                    "Resource" ["arn:aws:sqs:*:*:t-fun-*"]}]}}])
+
 (defn make-template
   [prefix]
   (let [cloudsearch-queue-name (format "%s-cloudsearch-load" prefix)
@@ -24,7 +35,7 @@
                                                        ::lambda/function-name lambda-name
                                                        ::lambda/batch-size 1})]
     (-> {(keyword cloudsearch-queue-name) cloudsearch-queue
-         :tfun-cloudsearch-load-esm cs-queue->lambda}
+         :t-fun-cloudsearch-load-esm cs-queue->lambda}
         (c/template "Resources to support t-fun")
         e/encode)))
 
@@ -45,8 +56,6 @@
   [cf-client stack-name]
   (invoke-with-throttle-retry {:args [cf-client {:op :DescribeStacks
                                                  :request {:StackName stack-name}}]}))
-
-(def default-arn-role "arn:aws:iam::304062982811:role/CfAdministratorAccess")
 
 (defn create-or-update
   [cf-client stack-name template]
@@ -87,11 +96,15 @@
           :else (do (Thread/sleep interval)
                     (recur)))))))
 
+(defn make-stack-name []
+  (let [{:keys [app-name deployment-group]} (ion/get-app-info)]
+    (format "%s-%s-infrastructure" app-name deployment-group)))
+
 (defn build-stack
   [cf-client deployment-group]
   (try
     (cast/event {:msg "INFRASTRUCTURE - build-stack"})
-    (let [stack-name (format "%s-%s-infrastructure" (:app-name (ion/get-app-info)) deployment-group)
+    (let [stack-name (make-stack-name)
           template (make-template stack-name)
           create-result (create-or-update cf-client stack-name template)]
       (if (and (:ErrorResponse create-result)
@@ -102,15 +115,6 @@
           (format "%s waiting for %s to stablize" (name result) stack-name))))
     (catch Exception e
       e)))
-
-(def tfun-query-group-policies
-  [{"PolicyName" "RoomkeyTfunSQSAccess"
-    "PolicyDocument" {"Version" "2012-10-17"
-                      "Statement" [{"Effect" "Allow"
-                                    "Action" ["sqs:ReceiveMessage" "sqs:GetQueueAttributes"
-                                              "sqs:DeleteMessage" "sqs:DeleteMessageBatch"
-                                              "sqs:SendMessage" "sqs:SendMessageBatch"]
-                                    "Resource" ["arn:aws:sqs:*:*:t-fun-*"]}]}}])
 
 (defn adjust-template
   [template]
@@ -125,13 +129,14 @@
                                  policies)))) ;; remove any existing Tfun policies
       (update-in ["Resources" "DatomicLambdaRole" "Properties" "Policies"]
                  concat
-                 tfun-query-group-policies) ;; add the current policies
+                 t-fun-query-group-policies) ;; add the current policies
       json/encode))
 
 (defn adjust-deployment-group
   [cf-client deployment-group]
   (cast/event {:msg "INFRASTRUCTURE - adjust-deployment-group"})
-  (let [response (cf-describe cf-client deployment-group)
+  (let [app-name (:app-name (ion/get-app-info))
+        response (cf-describe cf-client deployment-group)
         template (aws/invoke cf-client
                              {:op :GetTemplate
                               :request {:StackName deployment-group}})]
@@ -141,7 +146,10 @@
                       adjusted-template (adjust-template template)
                       s3-client (aws/client {:api :s3})
                       bucket-name "rk-persist"
-                      key-name (format "tfun/template/%s-%08x" deployment-group (hash adjusted-template))]
+                      key-name (format "%s/template/%s-%08x"
+                                       app-name
+                                       deployment-group
+                                       (hash adjusted-template))]
                   (when (not= (json/encode template) adjusted-template)
                     (cast/event {:msg "INFRASTRUCTURE - Updating query group stack" ::bucket bucket-name ::key-name key-name})
                     (aws/invoke s3-client
@@ -163,15 +171,18 @@
                         update-result)))))))
 
 (def stack-error
-  (future (let [deployment-group (or (:deployment-group (ion/get-app-info)) "dc-development-compute-main")
-                cf-client (aws/client {:api :cloudformation})
-                _ (cast/event {:msg (format "INFRASTRUCTURE - Stack updates starting on %s" deployment-group)})
-                result (some #(% cf-client deployment-group)
-                             [wait adjust-deployment-group wait build-stack])]
-            (if result
-              (cast/alert {:msg "INFRASTRUCTURE - Stack build result" ::result result})
-              (cast/event {:msg "INFRASTRUCTURE - Stack created/updated successfully"}))
-            result)))
+  (future (let [deployment-group (:deployment-group (ion/get-app-info))]
+            (if-not deployment-group
+              (do (cast/alert "INFRASTRUCTURE - Unable to determine deployment group")
+                  "Unable to determine deployment group")
+              (let [cf-client (aws/client {:api :cloudformation})
+                    _ (cast/event {:msg (format "INFRASTRUCTURE - Stack updates starting on %s" deployment-group)})
+                    result (some #(% cf-client deployment-group)
+                                 [wait adjust-deployment-group wait build-stack])]
+                (if result
+                  (cast/alert {:msg "INFRASTRUCTURE - Stack build result" ::result result})
+                  (cast/event {:msg "INFRASTRUCTURE - Stack created/updated successfully"}))
+                result)))))
 
 (defn stack-state
   [{:keys [input] :as params}]
