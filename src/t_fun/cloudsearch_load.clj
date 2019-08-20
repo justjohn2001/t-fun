@@ -164,19 +164,20 @@
            (filter #(contains? attr-to-find (:a %)) tx-data)))
 
 (defn expand-countries-and-regions
-  [dt-conn [entity-type e t t-id]]
-  (case entity-type
-    :place [[e t-id]]
-    :country (d/q '[:find ?e
-                    :in $ ?country-e
-                    :where [?e :rk.place/country ?country-e]]
-                  (-> dt-conn d/db (d/as-of t))
-                  e)
-    :region (d/q '[:find ?e
-                   :in $ ?region-e
-                   :where [?e :rk.place/region ?region-e]]
-                 (-> dt-conn d/db (d/as-of t))
-                 e)))
+  [dt-conn [[entity-type _ tx] :as l]]
+  (let [e-t (mapv (juxt second #(nth % 3)) l)]
+    (case entity-type
+      :place e-t
+      :country (d/q '[:find ?e ?t-id
+                      :in $ [[?country-e ?t-id]]
+                      :where [?e :rk.place/country ?country-e]]
+                    (-> dt-conn d/db (d/as-of tx))
+                    e-t)
+      :region (d/q '[:find ?e ?t-id
+                     :in $ [[?region-e ?t-id]]
+                     :where [?e :rk.place/region ?region-e]]
+                   (-> dt-conn d/db (d/as-of tx))
+                   e-t))))
 
 (defn sqs-send
   [sqs-client sqs-url op s]
@@ -211,6 +212,9 @@
          (update-in [:pending e] (fnil max 0) t-val)
          (update :max-t max t-val)))))
 
+(defn type-tx [e]
+  [(first e) (nth e 2)])
+
 (defn walk-transactions
   [dt-conn start-tx timeout]
   (let [sqs-client (aws/client {:api :sqs})
@@ -228,10 +232,12 @@
                      cat
                      (map (juxt :t #(find-entities location-attributes (:data %))))
                      (mapcat (fn [[t-id d]]
-                               (map (fn [{:keys [e a t]}]
-                                      (vector (-> a id->ident attribute->entity)
-                                              e t t-id))
-                                    d)))
+                               (sort-by type-tx
+                                        (map (fn [{:keys [e a tx]}]
+                                               (vector (-> a id->ident attribute->entity)
+                                                       e tx t-id))
+                                             d))))
+                     (partition-by type-tx)
                      (mapcat (partial expand-countries-and-regions dt-conn)))
                (entity-reducer dt-conn sqs-client sqs-url start-tx)
                (datomic-transactions dt-conn start-tx))))
@@ -255,7 +261,7 @@
 
 (defn upload-docs
   [client rows]
-  (log/info "Starting batch of" (count rows))
+  (cast/event {:msg (format "LOAD-LOCATIONS: Starting batch of %d" (count rows))})
   (let [docs (-> rows
                  (json/generate-string {:escape-non-ascii true})
                  .getBytes)
@@ -268,53 +274,61 @@
                                              :result result}))
       result)))
 
-(defn load-docs-to-cloudsearch
+(defn location-details
+  [db batch]
+  (map first (d/q '[:find (pull ?id [:db/id
+                                     :rk.place/id
+                                     :iata/airport-code
+                                     :rk.place/display-name
+                                     :rk.location/hotel-count
+                                     :rk.geo/latitude
+                                     :rk.geo/longitude
+                                     :rk.place/name
+                                     :rk.place/type
+
+                                     {:rk.place/country [:rk.country/code
+                                                         :rk.country/name]}
+                                     {:rk.place/region [:rk.region/name
+                                                        :rk.region/code]}
+                                     ])
+                    :in $ [?id ...]
+                    :where [?id :rk.place/id _]]
+                  db
+                  batch)))
+
+(def locations-doc-client
+  (delay (let [cs-client (aws/client {:api :cloudsearch})
+               domain-name (format "locations-%s" (name @core/stage))
+               domain-status-list (aws/invoke cs-client {:op :DescribeDomains :request {:DomainNames [domain-name]}})
+               endpoint (get-in domain-status-list [:DomainStatusList 0 :DocService :Endpoint])]
+           (aws/client {:api :cloudsearchdomain :endpoint-override endpoint}))))
+
+
+(defn load-locations-to-cloudsearch
   [{:keys [input]}]
   (let [config (datomic-config @core/stage)
         dt-conn (-> config
                     d/client
                     (d/connect {:db-name "rk"}))
-        ids (edn/read-string input)]
-    input))
+        {:keys [op ids]} (edn/read-string input)
+        doc-client @locations-doc-client]
+    (case op
+      :delete (do (cast/event {:msg (format "LOAD_LOCATIONS - processing batch of %d deletes" (count ids))})
+                  (upload-docs doc-client
+                               (sequence (comp (mapcat #(vector % (str % "-region_code")))
+                                               (map #(hash-map :type "delete" :id %)))
+                                         ids)))
+      :update (doseq [batch (partition-all 1000 ids)]
+                (cast/event {:msg (format "LOAD-LOCATIONS - Processing batch of %d updates" (count batch))})
+                (let [location-data (location-details (d/db dt-conn) batch)]
+                  (-> location-data
+                      (into {}
+                            (comp
+                             (mapcat #(cond-> [%]
+                                        (get-in % [:rk.place/region :rk.region/code]) (conj (make-alt-location %))))
+                             (map (juxt #(or (:alt-id %) (:rk.place/id %)) datomic->aws)))
+                            location-data)
+                      vals
+                      (partial upload-docs doc-client))))))
 
-
-#_(doseq [batch (partition-all 1000 updates)]
-    (log/infof "Processing batch of %d updates" (count batch))
-    (let [deletes (into {}
-                        (comp (map first)
-                              (map #(let [id (string/replace % " " "-")] [id {:type "delete" :id id}])))
-                        (d/q '[:find ?id
-                               :in $ [?e ...]
-                               :where [?e :rk.place/id ?id]]
-                             (d/history db)
-                             batch))
-          location-data (map first (d/q '[:find (pull ?id [:db/id
-                                                           :rk.place/id
-                                                           :iata/airport-code
-                                                           :rk.place/display-name
-                                                           :rk.location/hotel-count
-                                                           :rk.geo/latitude
-                                                           :rk.geo/longitude
-                                                           :rk.place/name
-                                                           :rk.place/type
-
-                                                           {:rk.place/country [:rk.country/code
-                                                                               :rk.country/name]}
-                                                           {:rk.place/region [:rk.region/name
-                                                                              :rk.region/code]}
-                                                           ])
-                                          :in $ [?id ...]
-                                          :where [?id :rk.place/id _]]
-                                        db
-                                        batch))]
-      (-> deletes
-          (merge (into {}
-                       (comp
-                        (mapcat #(cond-> [%]
-                                   (get-in % [:rk.place/region :rk.region/code])
-                                   (conj (make-alt-location %))))
-                        (map (juxt #(or (:alt-id %) (:rk.place/id %)) datomic->aws)))
-                       location-data))
-          vals
-          (->> (upload-docs doc-client)))))
-
+  )

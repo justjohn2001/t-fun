@@ -3,7 +3,9 @@
  :allow [
          t-fun.core/echo
          t-fun.infrastructure/stack-state
-         t-fun.cloudsearch-load/load-docs-to-cloudsearch]
+         t-fun.cloudsearch-load/load-locations-to-cloudsearch
+         t-fun.cloudsearch-load/queue-updates
+         ]
 
  :lambdas {:echo {:fn t-fun.core/echo
                   :description "Echos request back"
@@ -11,7 +13,10 @@
            :stack-state {:fn t-fun.infrastructure/stack-state
                          :description "Returns the state of the Cloudformation stack creation"
                          :concurrency-limit 1}
-           :cloudsearch-locations {:fn t-fun.cloudsearch-load/load-docs-to-cloudsearch
+           :cloudsearch-locations {:fn t-fun.cloudsearch-load/load-locations-to-cloudsearch
                                    :description "Target for SQS queue which loads location documents to Cloudsearch"
                                    :concurrency-limit 1}
+           :queue-updates {:fb t-fun.cloudsearch-load/queue-updates
+                           :description "Walk the datomic transactions and find locations that need to be updated in Cloudsearch"
+                           :concurrency-limit 1}
            }}
