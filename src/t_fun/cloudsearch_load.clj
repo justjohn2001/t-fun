@@ -227,8 +227,7 @@
         id->ident (into {} (map (juxt :db/id :db/ident)
                                 (mem-attribute-ids dt-conn)))
         location-attributes (into #{} (map :db/id (mem-attribute-ids dt-conn)))]
-    (transduce (comp (take 1)
-                     (take-until (fn [_] (< (System/currentTimeMillis) stop-time)))
+    (transduce (comp (take-until (fn [_] (< (System/currentTimeMillis) stop-time)))
                      cat
                      (map (juxt :t #(find-entities location-attributes (:data %))))
                      (mapcat (fn [[t-id d]]
