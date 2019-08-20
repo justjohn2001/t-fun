@@ -323,7 +323,7 @@
                       (let [{:keys [op ids] :as request} (-> record :body edn/read-string)]
                         (case op
                           :delete (do (cast/event {:msg (format "LOAD-LOCATIONS - processing batch of %d deletes" (count ids))
-                                                   ::updates i})
+                                                   ::updates ids})
                                       (upload-docs doc-client
                                                    (sequence (comp (mapcat #(vector % (str % "-region_code")))
                                                                    (map #(hash-map :type "delete" :id %)))
