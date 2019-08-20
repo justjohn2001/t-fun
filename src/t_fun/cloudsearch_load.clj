@@ -310,7 +310,7 @@
                     d/client
                     (d/connect {:db-name "rk"}))
         {:keys [op ids]} (-> input
-                             (json/parse-string :key-fn keyword)
+                             (json/parse-string true)
                              (get-in [:Records :body])
                              edn/read-string)
         doc-client @locations-doc-client]
