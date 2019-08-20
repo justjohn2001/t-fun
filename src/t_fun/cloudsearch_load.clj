@@ -301,6 +301,10 @@
                domain-name (format "locations-%s" (name @core/stage))
                domain-status-list (aws/invoke cs-client {:op :DescribeDomains :request {:DomainNames [domain-name]}})
                endpoint (get-in domain-status-list [:DomainStatusList 0 :DocService :Endpoint])]
+           (cast/event {:msg "LOAD-LOCATIONS - cloudsearch client details"
+                        ::details {:domain-name domain-name
+                                   :domain-status-list domain-status-list
+                                   :endpoint endpoint}})
            (aws/client {:api :cloudsearchdomain :endpoint-override endpoint}))))
 
 
