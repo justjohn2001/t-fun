@@ -309,10 +309,10 @@
         dt-conn (-> config
                     d/client
                     (d/connect {:db-name "rk"}))
-        {:keys [op ids]} (-> input
-                             (json/parse-string true)
-                             (get-in [:Records :body])
-                             edn/read-string)
+        {:keys [op ids] :as request} (-> input
+                                         (json/parse-string true)
+                                         (get-in [:Records :body])
+                                         edn/read-string)
         doc-client @locations-doc-client]
     (case op
       :delete (do (cast/event {:msg (format "LOAD-LOCATIONS - processing batch of %d deletes" (count ids))})
@@ -331,6 +331,8 @@
                              (map (juxt #(or (:alt-id %) (:rk.place/id %)) datomic->aws)))
                             location-data)
                       vals
-                      (partial upload-docs doc-client))))))
+                      (partial upload-docs doc-client))))
+      (do (cast/alert {:msg "LOAD-LOCATIONS - unknown operation" ::request request})
+          (throw (ex-info (format "Unknown operation - %s" op))))))
 
   )
