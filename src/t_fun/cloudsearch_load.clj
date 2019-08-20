@@ -309,10 +309,13 @@
         dt-conn (-> config
                     d/client
                     (d/connect {:db-name "rk"}))
-        {:keys [op ids]} (edn/read-string input)
+        {:keys [op ids]} (-> input
+                             (json/parse-string :key-fn keyword)
+                             (get-in [:Records :body])
+                             edn/read-string)
         doc-client @locations-doc-client]
     (case op
-      :delete (do (cast/event {:msg (format "LOAD_LOCATIONS - processing batch of %d deletes" (count ids))})
+      :delete (do (cast/event {:msg (format "LOAD-LOCATIONS - processing batch of %d deletes" (count ids))})
                   (upload-docs doc-client
                                (sequence (comp (mapcat #(vector % (str % "-region_code")))
                                                (map #(hash-map :type "delete" :id %)))
