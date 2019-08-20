@@ -181,7 +181,8 @@
 
 (defn sqs-send
   [sqs-client sqs-url op s]
-  (cast/event {:msg (format "Sending batch to sqs to %s" sqs-url)})
+  (cast/event {:msg (format "Sending batch to sqs to %s" sqs-url)
+               ::string s})
   (aws/invoke sqs-client {:op :SendMessage
                           :request {:QueueUrl sqs-url
                                     :MessageBody (format "{:op %s :ids [%s]}" op s)}}))
@@ -328,19 +329,15 @@
                                                    (sequence (comp (mapcat #(vector % (str % "-region_code")))
                                                                    (map #(hash-map :type "delete" :id %)))
                                                              ids)))
-                          :update (sequence (map (fn [batch]
-                                                   (cast/event {:msg (format "LOAD-LOCATIONS - Processing batch of %d updates" (count batch))
-                                                                ::updates batch})
-                                                   (let [location-data (location-details (d/db dt-conn) batch)]
-                                                     (->> location-data
-                                                          (into {}
-                                                                (comp
-                                                                 (mapcat #(cond-> [%]
-                                                                            (get-in % [:rk.place/region :rk.region/code]) (conj (make-alt-location %))))
-                                                                 (map (juxt #(or (:alt-id %) (:rk.place/id %)) datomic->aws))))
-                                                          vals
-                                                          (upload-docs doc-client)))))
-                                            (partition-all 1000 ids))
+                          :update (let [location-data (location-details (d/db dt-conn) ids)]
+                                    (->> location-data
+                                         (into {}
+                                               (comp
+                                                (mapcat #(cond-> [%]
+                                                           (get-in % [:rk.place/region :rk.region/code]) (conj (make-alt-location %))))
+                                                (map (juxt #(or (:alt-id %) (:rk.place/id %)) datomic->aws))))
+                                         vals
+                                         (upload-docs doc-client)))
                           (do (cast/alert {:msg "LOAD-LOCATIONS - unknown operation" ::request request ::input input})
                               (throw (ex-info (format "Unknown operation - %s" op) {:request request})))
                           ))))
