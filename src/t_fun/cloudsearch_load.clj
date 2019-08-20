@@ -309,30 +309,31 @@
         dt-conn (-> config
                     d/client
                     (d/connect {:db-name "rk"}))
-        {:keys [op ids] :as request} (-> input
-                                         (json/parse-string true)
-                                         (get-in [:Records :body])
-                                         edn/read-string)
+        records (-> input
+                    (json/parse-string true)
+                    :Records)
         doc-client @locations-doc-client]
-    (case op
-      :delete (do (cast/event {:msg (format "LOAD-LOCATIONS - processing batch of %d deletes" (count ids))})
-                  (upload-docs doc-client
-                               (sequence (comp (mapcat #(vector % (str % "-region_code")))
-                                               (map #(hash-map :type "delete" :id %)))
-                                         ids)))
-      :update (doseq [batch (partition-all 1000 ids)]
-                (cast/event {:msg (format "LOAD-LOCATIONS - Processing batch of %d updates" (count batch))})
-                (let [location-data (location-details (d/db dt-conn) batch)]
-                  (-> location-data
-                      (into {}
-                            (comp
-                             (mapcat #(cond-> [%]
-                                        (get-in % [:rk.place/region :rk.region/code]) (conj (make-alt-location %))))
-                             (map (juxt #(or (:alt-id %) (:rk.place/id %)) datomic->aws)))
-                            location-data)
-                      vals
-                      (partial upload-docs doc-client))))
-      (do (cast/alert {:msg "LOAD-LOCATIONS - unknown operation" ::request request})
-          (throw (ex-info (format "Unknown operation - %s" op) {:request request})))))
+    (map (fn [{:keys [op ids] :as request}]
+           (case op
+             :delete (do (cast/event {:msg (format "LOAD-LOCATIONS - processing batch of %d deletes" (count ids))})
+                         (upload-docs doc-client
+                                      (sequence (comp (mapcat #(vector % (str % "-region_code")))
+                                                      (map #(hash-map :type "delete" :id %)))
+                                                ids)))
+             :update (doseq [batch (partition-all 1000 ids)]
+                       (cast/event {:msg (format "LOAD-LOCATIONS - Processing batch of %d updates" (count batch))})
+                       (let [location-data (location-details (d/db dt-conn) batch)]
+                         (-> location-data
+                             (into {}
+                                   (comp
+                                    (mapcat #(cond-> [%]
+                                               (get-in % [:rk.place/region :rk.region/code]) (conj (make-alt-location %))))
+                                    (map (juxt #(or (:alt-id %) (:rk.place/id %)) datomic->aws)))
+                                   location-data)
+                             vals
+                             (partial upload-docs doc-client))))
+             (do (cast/alert {:msg "LOAD-LOCATIONS - unknown operation" ::request request ::input input})
+                 (throw (ex-info (format "Unknown operation - %s" op) {:request request})))))
+         records))
 
   )
