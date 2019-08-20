@@ -185,7 +185,7 @@
                ::string s})
   (aws/invoke sqs-client {:op :SendMessage
                           :request {:QueueUrl sqs-url
-                                    :MessageBody (format "{:op %s :ids [%s]}" op s)}}))
+                                    :MessageBody (format "{:op %s :ids %s}" op s)}}))
 
 (defn entity-reducer
   [dt-conn sqs-client sqs-url start-tx]
