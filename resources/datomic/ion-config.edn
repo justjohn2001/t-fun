@@ -16,7 +16,7 @@
            :cloudsearch-locations {:fn t-fun.cloudsearch-load/load-locations-to-cloudsearch
                                    :description "Target for SQS queue which loads location documents to Cloudsearch"
                                    :concurrency-limit 1}
-           :queue-updates {:fb t-fun.cloudsearch-load/queue-updates
+           :queue-updates {:fn t-fun.cloudsearch-load/queue-updates
                            :description "Walk the datomic transactions and find locations that need to be updated in Cloudsearch"
                            :concurrency-limit 1}
            }}
