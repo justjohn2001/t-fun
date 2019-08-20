@@ -321,6 +321,8 @@
         doc-client @locations-doc-client]
     (pr-str
      (sequence (map (fn [record]
+                      (cast/event {:msg "LOAD-LOCATIONS - Processing record"
+                                   ::record record})
                       (let [{:keys [op ids] :as request} (-> record :body edn/read-string)]
                         (case op
                           :delete (do (cast/event {:msg (format "LOAD-LOCATIONS - processing batch of %d deletes" (count ids))
