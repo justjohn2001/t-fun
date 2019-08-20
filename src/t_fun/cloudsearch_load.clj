@@ -333,6 +333,6 @@
                       vals
                       (partial upload-docs doc-client))))
       (do (cast/alert {:msg "LOAD-LOCATIONS - unknown operation" ::request request})
-          (throw (ex-info (format "Unknown operation - %s" op))))))
+          (throw (ex-info (format "Unknown operation - %s" op) {:request request})))))
 
   )
