@@ -21,8 +21,10 @@
                       "Statement" [{"Effect" "Allow"
                                     "Action" ["sqs:ReceiveMessage" "sqs:GetQueueAttributes"
                                               "sqs:DeleteMessage" "sqs:DeleteMessageBatch"
-                                              "sqs:SendMessage" "sqs:SendMessageBatch"]
-                                    "Resource" ["arn:aws:sqs:*:*:t-fun-*"]}]}}])
+                                              "sqs:SendMessage" "sqs:SendMessageBatch"
+                                              "cloudsearch:document" "cloudsearch:search" "cloudsearch:DescribeDomains"]
+                                    "Resource" ["arn:aws:sqs:*:*:t-fun-*"
+                                                "arn:aws:cloudsearch:*:*:domain/locations-*"]}]}}])
 
 (defn make-template
   [prefix]

@@ -322,13 +322,15 @@
      (sequence (map (fn [record]
                       (let [{:keys [op ids] :as request} (-> record :body edn/read-string)]
                         (case op
-                          :delete (do (cast/event {:msg (format "LOAD-LOCATIONS - processing batch of %d deletes" (count ids))})
+                          :delete (do (cast/event {:msg (format "LOAD-LOCATIONS - processing batch of %d deletes" (count ids))
+                                                   ::updates i})
                                       (upload-docs doc-client
                                                    (sequence (comp (mapcat #(vector % (str % "-region_code")))
                                                                    (map #(hash-map :type "delete" :id %)))
                                                              ids)))
-                          :update (sequence (map (fn [batch ]
-                                                   (cast/event {:msg (format "LOAD-LOCATIONS - Processing batch of %d updates" (count batch))})
+                          :update (sequence (map (fn [batch]
+                                                   (cast/event {:msg (format "LOAD-LOCATIONS - Processing batch of %d updates" (count batch))
+                                                                ::updates batch})
                                                    (let [location-data (location-details (d/db dt-conn) batch)]
                                                      (->> location-data
                                                           (into {}
