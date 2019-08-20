@@ -260,38 +260,39 @@
 
 (defn upload-docs
   [client rows]
-  (cast/event {:msg (format "LOAD-LOCATIONS: Starting batch of %d" (count rows))})
-  (let [docs (-> rows
-                 (json/generate-string {:escape-non-ascii true})
-                 .getBytes)
-        {:keys [status adds] :as result} (walk/keywordize-keys
-                                          (aws/invoke client {:op :UploadDocuments
-                                                              :request {:contentType "application/json"
-                                                                        :documents docs}}))]
-    (if (= status "error")
-      (throw (ex-info "Error sending batch" {:batch rows
-                                             :result result}))
-      result)))
+  (when (seq rows)
+    (cast/event {:msg (format "LOAD-LOCATIONS: Starting batch of %d" (count rows))})
+    (let [docs (-> rows
+                   (json/generate-string {:escape-non-ascii true})
+                   .getBytes)
+          {:keys [status adds] :as result} (walk/keywordize-keys
+                                            (aws/invoke client {:op :UploadDocuments
+                                                                :request {:contentType "application/json"
+                                                                          :documents docs}}))]
+      (if (= status "error")
+        (throw (ex-info "Error sending batch" {:batch rows
+                                               :result result}))
+        result))))
 
 (defn location-details
   [db batch]
-  (map first (d/q '[:find (pull ?id [:db/id
-                                     :rk.place/id
-                                     :iata/airport-code
-                                     :rk.place/display-name
-                                     :rk.location/hotel-count
-                                     :rk.geo/latitude
-                                     :rk.geo/longitude
-                                     :rk.place/name
-                                     :rk.place/type
+  (map first (d/q '[:find (pull ?e [:db/id
+                                    :rk.place/id
+                                    :iata/airport-code
+                                    :rk.place/display-name
+                                    :rk.location/hotel-count
+                                    :rk.geo/latitude
+                                    :rk.geo/longitude
+                                    :rk.place/name
+                                    :rk.place/type
 
-                                     {:rk.place/country [:rk.country/code
-                                                         :rk.country/name]}
-                                     {:rk.place/region [:rk.region/name
-                                                        :rk.region/code]}
-                                     ])
+                                    {:rk.place/country [:rk.country/code
+                                                        :rk.country/name]}
+                                    {:rk.place/region [:rk.region/name
+                                                       :rk.region/code]}
+                                    ])
                     :in $ [?id ...]
-                    :where [?id :rk.place/id _]]
+                    :where [?e :rk.place/id ?id]]
                   db
                   batch)))
 
@@ -314,7 +315,7 @@
                     :Records)
         doc-client @locations-doc-client]
     (doseq [record records]
-      (let [{:keys [op ids] :as request} (-> record :Body edn/read-string)]
+      (let [{:keys [op ids] :as request} (-> record :body edn/read-string)]
         (case op
           :delete (do (cast/event {:msg (format "LOAD-LOCATIONS - processing batch of %d deletes" (count ids))})
                       (upload-docs doc-client
@@ -324,15 +325,14 @@
           :update (doseq [batch (partition-all 1000 ids)]
                     (cast/event {:msg (format "LOAD-LOCATIONS - Processing batch of %d updates" (count batch))})
                     (let [location-data (location-details (d/db dt-conn) batch)]
-                      (-> location-data
-                          (into {}
-                                (comp
-                                 (mapcat #(cond-> [%]
-                                            (get-in % [:rk.place/region :rk.region/code]) (conj (make-alt-location %))))
-                                 (map (juxt #(or (:alt-id %) (:rk.place/id %)) datomic->aws)))
-                                location-data)
-                          vals
-                          (partial upload-docs doc-client))))
+                      (->> location-data
+                           (into {}
+                                 (comp
+                                  (mapcat #(cond-> [%]
+                                             (get-in % [:rk.place/region :rk.region/code]) (conj (make-alt-location %))))
+                                  (map (juxt #(or (:alt-id %) (:rk.place/id %)) datomic->aws))))
+                           vals
+                           (upload-docs doc-client))))
           (do (cast/alert {:msg "LOAD-LOCATIONS - unknown operation" ::request request ::input input})
               (throw (ex-info (format "Unknown operation - %s" op) {:request request}))))))
     )
