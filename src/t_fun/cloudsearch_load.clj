@@ -81,29 +81,32 @@
     {region-code :rk.region/code region-name :rk.region/name} :rk.place/region
     {country-code :rk.country/code country-name :rk.country/name} :rk.place/country
     :as m}]
-  {:type "add"
-   :id (string/replace (or alt-id id) " " "-")
-   :fields (cond-> {:tid id
-                    :country_code country-code
-                    :country_name country-name
-                    :full_name display-name
-                    :full_name_starts_with (-> display-name
-                                               make-starts-with
-                                               expand-n-gram)
-                    :full_name_starts_with_anywhere (-> display-name
-                                                        (make-starts-with #" ")
-                                                        (->> (reduce (fn [coll i]
-                                                                       (apply conj coll (expand-n-gram i)))
-                                                                     (sorted-set))))
+  (if (zero? hotel-count)
+    {:type "delete"
+     :id (string/replace (or alt-id id) " " "-")}
+    {:type "add"
+     :id (string/replace (or alt-id id) " " "-")
+     :fields (cond-> {:tid id
+                      :country_code country-code
+                      :country_name country-name
+                      :full_name display-name
+                      :full_name_starts_with (-> display-name
+                                                 make-starts-with
+                                                 expand-n-gram)
+                      :full_name_starts_with_anywhere (-> display-name
+                                                          (make-starts-with #" ")
+                                                          (->> (reduce (fn [coll i]
+                                                                         (apply conj coll (expand-n-gram i)))
+                                                                       (sorted-set))))
 
-                    :hotel_count (or hotel-count 0)
-                    :latlng (format "%.6f,%.6f" latitude longitude)
-                    :name name
-                    :place_type type
-                    :is_primary ((fnil identity true) is_primary)}
-             airport-code (assoc :airport_code airport-code)
-             region-code (assoc :region_code region-code)
-             region-name (assoc :region region-name))})
+                      :hotel_count (or hotel-count 0)
+                      :latlng (format "%.6f,%.6f" latitude longitude)
+                      :name name
+                      :place_type type
+                      :is_primary ((fnil identity true) is_primary)}
+               airport-code (assoc :airport_code airport-code)
+               region-code (assoc :region_code region-code)
+               region-name (assoc :region region-name))}))
 
 (defn- make-alt-location
   [{{:keys [rk.region/code rk.region/name]} :rk.place/region :as loc}]
@@ -181,8 +184,7 @@
 
 (defn sqs-send
   [sqs-client sqs-url op s]
-  (cast/event {:msg (format "Sending batch to sqs to %s" sqs-url)
-               ::string s})
+  (cast/event {:msg (format "Sending batch to sqs to %s" sqs-url)})
   (aws/invoke sqs-client {:op :SendMessage
                           :request {:QueueUrl sqs-url
                                     :MessageBody (format "{:op %s :ids %s}" op s)}}))
@@ -321,8 +323,6 @@
         doc-client @locations-doc-client]
     (pr-str
      (sequence (map (fn [record]
-                      (cast/event {:msg "LOAD-LOCATIONS - Processing record"
-                                   ::record record})
                       (let [{:keys [op ids] :as request} (-> record :body edn/read-string)]
                         (case op
                           :delete (do (cast/event {:msg (format "LOAD-LOCATIONS - processing batch of %d deletes" (count ids))
