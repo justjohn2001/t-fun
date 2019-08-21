@@ -81,7 +81,7 @@
     {region-code :rk.region/code region-name :rk.region/name} :rk.place/region
     {country-code :rk.country/code country-name :rk.country/name} :rk.place/country
     :as m}]
-  (if (zero? hotel-count)
+  (if (or (nil? hotel-count) (zero? hotel-count))
     {:type "delete"
      :id (string/replace (or alt-id id) " " "-")}
     {:type "add"
