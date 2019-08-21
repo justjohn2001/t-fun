@@ -35,7 +35,8 @@
             s)))
 
 (def attribute->entity
-  {:rk.location/hotel-count :place
+  {nil :place
+   :rk.location/hotel-count :place
    :rk.place/id :place
    :rk.place/region :place
    :rk.place/name :place
@@ -131,10 +132,11 @@
 (defn datomic-transactions
   [dt-conn tx-id]
   (cast/dev {:msg (format "Loading tx %d" tx-id)})
-  (when-let [tx (d/tx-range dt-conn
-                            {:start tx-id
-                             :end (inc tx-id)})]
-    (cons (seq tx) (lazy-seq (datomic-transactions dt-conn (inc tx-id))))))
+  (let [tx (d/tx-range dt-conn
+                       {:start tx-id
+                        :end (inc tx-id)})]
+    (when (seq tx)
+      (cons (seq tx) (lazy-seq (datomic-transactions dt-conn (inc tx-id)))))))
 
 
 (defn take-until
@@ -163,8 +165,10 @@
 
 (defn find-entities
   [attr-to-find tx-data]
-  (sort-by :added
-           (filter #(contains? attr-to-find (:a %)) tx-data)))
+  (let [wanted-entities (filter #(contains? attr-to-find (:a %)) tx-data)]
+    (if (seq wanted-entities)
+      (sort-by :added wanted-entities)
+      [{}])))
 
 (defn expand-countries-and-regions
   [dt-conn [[entity-type _ tx] :as l]]
@@ -194,28 +198,29 @@
   (fn entity-reducer*
     ([] {:pending {} :max-t start-tx})
     ([{:keys [pending max-t]}]
-     (when (not-empty pending)
-       (let [id-map (into {}
-                          (d/q '[:find ?e ?id
-                                 :in $ [?e ...]
-                                 :where [?e :rk.place/id ?id]]
-                               (d/db dt-conn) (keys pending)))
-             updates (vals id-map)
-             deletes (apply dissoc pending (keys id-map))
-             send-result (transduce (comp (partition-all 1000)
-                                          (map pr-str)
-                                          (map (partial sqs-send sqs-client sqs-url :update)))
-                                    conj
-                                    []
-                                    updates)]
+     (merge {:max-t max-t}
+            (when (not-empty pending)
+              (let [id-map (into {}
+                                 (d/q '[:find ?e ?id
+                                        :in $ [?e ...]
+                                        :where [?e :rk.place/id ?id]]
+                                      (d/db dt-conn) (keys pending)))
+                    updates (vals id-map)
+                    deletes (apply dissoc pending (keys id-map))
+                    send-result (transduce (comp (partition-all 1000)
+                                                 (map pr-str)
+                                                 (map (partial sqs-send sqs-client sqs-url :update)))
+                                           conj
+                                           []
+                                           updates)]
                                         ; TODO - send deletes
-         {:max-t max-t :sent (count updates) :send-results send-result :deleted (count deletes)})))
+                {:sent (count updates) :send-results send-result :deleted (count deletes)}))))
     ([acc [e t-val]]
-     (-> acc
-         (update-in [:pending e] (fnil max 0) t-val)
-         (update :max-t max t-val)))))
+     (cond-> acc
+       e (update-in [:pending e] (fnil max 0) t-val)
+       t-val (update :max-t max t-val)))))
 
-(defn type-tx [e]
+(defn type-and-tx [e]
   [(first e) (nth e 2)])
 
 (defn walk-transactions
@@ -234,29 +239,38 @@
                      cat
                      (map (juxt :t #(find-entities location-attributes (:data %))))
                      (mapcat (fn [[t-id d]]
-                               (sort-by type-tx
+                               (sort-by type-and-tx
                                         (map (fn [{:keys [e a tx]}]
                                                (vector (-> a id->ident attribute->entity)
                                                        e tx t-id))
                                              d))))
-                     (partition-by type-tx)
+                     (partition-by type-and-tx)
                      (mapcat (partial expand-countries-and-regions dt-conn)))
                (entity-reducer dt-conn sqs-client sqs-url start-tx)
                (datomic-transactions dt-conn start-tx))))
 
+(def tx-param-name "Next tx to load cloudsearch-locations")
+
 (defn queue-updates
-  [i]
-  (let [dt-conn (-> (datomic-config @core/stage)
+  [{:keys [input]}]
+  (let [options (try (edn/read-string input) (catch Exception e {}))
+        _ (cast/event {:msg "options" ::options options})
+        dt-conn (-> (datomic-config @core/stage)
                     d/client
                     (d/connect {:db-name "rk"}))
-        [[start-tx e]] [[i nil]] #_(d/q '[:find ?tx ?e
-                                          :where
-                                          [?e :rk/name "Next txid to load into cloudsearch"]
-                                          [?e :rk/tx-id ?tx]]
-                                        (d/db dt-conn))
-        {:keys [max-t sent deleted]} (walk-transactions dt-conn start-tx 0)]
-    #_(d/transact dt-conn
-                  {:tx-data [[:db/add e :rk/tx-id (inc max-t)]]})
+        {e :db/id last-tx :rk.param/int-value} (ffirst (d/q '[:find (pull ?e [:db/id :rk.param/int-value])
+                                                              :in $ ?name
+                                                              :where [?e :rk.param/name ?name]]
+                                                            (d/db dt-conn)
+                                                            tx-param-name))
+        {:keys [max-t sent deleted]
+         :or {sent 0 deleted 0}} (walk-transactions dt-conn
+                                                    (or (:start-tx options) (inc last-tx))
+                                                    (or (:timeout options) 120000))]
+    (d/transact dt-conn
+                {:tx-data [{:db/id "param"
+                            :rk.param/name tx-param-name
+                            :rk.param/int-value max-t}]})
     (let [msg (format "QUEUE-UPDATES: Read through transaction %d. Sent %d updates, %d deletes." max-t sent deleted)]
       (cast/event {:msg msg})
       msg)))
