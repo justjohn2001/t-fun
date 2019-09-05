@@ -9,7 +9,7 @@
             [datomic.client.api.async :as da]
 
             [clojure.walk :as walk]
-            [t-fun.lib.cast :as cast]
+            [datomic.ion.cast :as cast]
             [datomic.ion :as ion]
             [t-fun.core :as core]
             [t-fun.infrastructure :as inf])
@@ -78,7 +78,7 @@
   [{:keys [rk.place/id iata/airport-code
            rk.place/display-name rk.location/hotel-count rk.geo/latitude rk.geo/longitude
            rk.place/name rk.place/type
-           is_primary alt-id]
+           is_primary (nil? alt-id)]
     {region-code :rk.region/code region-name :rk.region/name} :rk.place/region
     {country-code :rk.country/code country-name :rk.country/name} :rk.place/country
     :as m}]
@@ -104,7 +104,7 @@
                       :latlng (format "%.6f,%.6f" latitude longitude)
                       :name name
                       :place_type type
-                      :is_primary ((fnil identity true) is_primary)}
+                      :is_primary is_primary}
                airport-code (assoc :airport_code airport-code)
                region-code (assoc :region_code region-code)
                region-name (assoc :region region-name))}))
@@ -127,8 +127,6 @@
             (d/db dt-conn)
             (keys attribute->entity))))
 
-(def mem-attribute-ids (memoize get-attribute-ids))
-
 (defn datomic-transactions
   [dt-conn tx-id]
   (cast/dev {:msg (format "Loading tx %d" tx-id)})
@@ -139,10 +137,8 @@
       (cons (seq tx) (lazy-seq (datomic-transactions dt-conn (inc tx-id)))))))
 
 
-(defn take-until
-  "Returns a lazy sequence of successive items from coll until the first value where
-  (pred item) returns logical true. pred must be free of side-effects.
-  Returns a transducer when no collection is provided."
+(defn take-while*
+  "Like take-while but includes the first element where pred evaluates to false."
   {:added "1.0"
    :static true}
   ([pred]
@@ -164,8 +160,8 @@
           f))))))
 
 (defn find-entities
-  [attr-to-find tx-data]
-  (let [wanted-entities (filter #(contains? attr-to-find (:a %)) tx-data)]
+  [attr-to-find datoms]
+  (let [wanted-entities (filter #(contains? attr-to-find (:a %)) datoms)]
     (if (seq wanted-entities)
       (sort-by :added wanted-entities)
       [{}])))
@@ -188,7 +184,8 @@
 
 (defn sqs-send
   [sqs-client sqs-url op s]
-  (cast/event {:msg (format "Sending batch to sqs to %s" sqs-url)})
+  (cast/event {:msg (format "Sending batch to sqs to %s" sqs-url)
+               ::section "SQS-SEND"})
   (aws/invoke sqs-client {:op :SendMessage
                           :request {:QueueUrl sqs-url
                                     :MessageBody (format "{:op %s :ids %s}" op s)}}))
@@ -232,10 +229,11 @@
                                                                      (inf/make-stack-name)
                                                                      "cloudsearch-load")}}))
         stop-time (+ (System/currentTimeMillis) timeout)
+        attribute-ids (get-attribute-ids dt-conn)
         id->ident (into {} (map (juxt :db/id :db/ident)
-                                (mem-attribute-ids dt-conn)))
-        location-attributes (into #{} (map :db/id (mem-attribute-ids dt-conn)))]
-    (transduce (comp (take-until (fn [_] (< (System/currentTimeMillis) stop-time)))
+                                attribute-ids))
+        location-attributes (into #{} (map :db/id attribute-ids))]
+    (transduce (comp (take-while* (fn [_] (< (System/currentTimeMillis) stop-time)))
                      cat
                      (map (juxt :t #(find-entities location-attributes (:data %))))
                      (mapcat (fn [[t-id d]]
@@ -249,7 +247,7 @@
                (entity-reducer dt-conn sqs-client sqs-url start-tx)
                (datomic-transactions dt-conn start-tx))))
 
-(def tx-param-name "Next tx to load cloudsearch-locations")
+(def tx-param-name "Last tx-id queued to cloudsearch-locations")
 
 (defn queue-updates
   [{:keys [input]}]
@@ -271,14 +269,15 @@
                 {:tx-data [{:db/id "param"
                             :rk.param/name tx-param-name
                             :rk.param/int-value max-t}]})
-    (let [msg (format "QUEUE-UPDATES: Read through transaction %d. Sent %d updates, %d deletes." max-t sent deleted)]
-      (cast/event {:msg msg})
+    (let [msg (format "Read through transaction %d. Sent %d updates, %d deletes." max-t sent deleted)]
+      (cast/event {:msg msg ::section "QUEUE-UPDATES"})
       msg)))
 
 (defn upload-docs
   [client rows]
   (when (seq rows)
-    (cast/event {:msg (format "LOAD-LOCATIONS: Starting batch of %d" (count rows))})
+    (cast/event {:msg (format "Starting batch of %d" (count rows))
+                 ::section "LOAD-LOCATIONS"})
     (let [docs (-> rows
                    (json/generate-string {:escape-non-ascii true})
                    .getBytes)
@@ -292,7 +291,7 @@
         result))))
 
 (defn location-details
-  [db batch]
+  [db ids]
   (map first (d/q '[:find (pull ?e [:db/id
                                     :rk.place/id
                                     :iata/airport-code
@@ -311,14 +310,15 @@
                     :in $ [?id ...]
                     :where [?e :rk.place/id ?id]]
                   db
-                  batch)))
+                  ids)))
 
 (def locations-doc-client
   (delay (let [cs-client (aws/client {:api :cloudsearch})
                domain-name (format "locations-%s" (name @core/stage))
                domain-status-list (aws/invoke cs-client {:op :DescribeDomains :request {:DomainNames [domain-name]}})
                endpoint (get-in domain-status-list [:DomainStatusList 0 :DocService :Endpoint])]
-           (cast/event {:msg "LOAD-LOCATIONS - cloudsearch client details"
+           (cast/event {:msg "cloudsearch client details"
+                        ::section "LOAD-LOCATIONS"
                         ::details {:domain-name domain-name
                                    :domain-status-list domain-status-list
                                    :endpoint endpoint}})
@@ -339,13 +339,15 @@
      (sequence (map (fn [record]
                       (let [{:keys [op ids] :as request} (-> record :body edn/read-string)]
                         (case op
-                          :delete (do (cast/event {:msg (format "LOAD-LOCATIONS - processing batch of %d deletes" (count ids))
+                          :delete (do (cast/event {:msg (format "processing batch of %d deletes" (count ids))
+                                                   ::section "LOAD-LOCATIONS"
                                                    ::deletes ids})
                                       (upload-docs doc-client
                                                    (sequence (comp (mapcat #(vector % (str % "-region_code")))
                                                                    (map #(hash-map :type "delete" :id %)))
                                                              ids)))
-                          :update (do (cast/event {:msg (format "LOAD-LOCATIONS - processing batch of %d updates" (count ids))
+                          :update (do (cast/event {:msg (format "processing batch of %d updates" (count ids))
+                                                   ::section "LOAD-LOCATIONS"
                                                    ::updates ids})
                                       (let [location-data (location-details (d/db dt-conn) ids)]
                                         (->> location-data
@@ -356,7 +358,10 @@
                                                     (map (juxt #(or (:alt-id %) (:rk.place/id %)) datomic->aws))))
                                              vals
                                              (upload-docs doc-client))))
-                          (do (cast/alert {:msg "LOAD-LOCATIONS - unknown operation" ::request request ::input input})
+                          (do (cast/alert {:msg "unknown operation"
+                                           ::request request
+                                           ::input input
+                                           ::section "LOAD-LOCATIONS"                                           })
                               (throw (ex-info (format "Unknown operation - %s" op) {:request request})))
                           ))))
                records))))

@@ -5,9 +5,10 @@
    [cognitect.aws.client.api :as aws]
    [cognitect.aws.util :as aws.util]
    [crucible.core :as c]
+   [crucible.aws.lambda :as lambda]
+   [crucible.aws.iam :as iam]
    [crucible.aws.sqs :as sqs]
    [crucible.aws.sqs.queue :as sqs.q]
-   [crucible.aws.lambda :as lambda]
    [crucible.encoding :as e]
    [datomic.ion :as ion]
    [t-fun.lib.cast :as cast])
@@ -16,7 +17,15 @@
 (def default-arn-role "arn:aws:iam::304062982811:role/CfAdministratorAccess")
 
 (def t-fun-query-group-policies
-  [{"PolicyName" "RoomkeyTfunSQSAccess"
+  #_(iam/policy {::iam/policy-name "RoomkeyTfunSQSAccess"
+                 ::iam/policy-document {::iam/statement [{::iam/effect "Allow"
+                                                          ::iam/action ["sqs:ReceiveMessage" "sqs:GetQueueAttributes"
+                                                                        "sqs:DeleteMessage" "sqs:DeleteMessageBatch"
+                                                                        "sqs:SendMessage" "sqs:SendMessageBatch"
+                                                                        "cloudsearch:document" "cloudsearch:search" "cloudsearch:DescribeDomains"]
+                                                          ::iam/resource ["arn:aws:sqs:*:*:t-fun-*"
+                                                                          "arn:aws:cloudsearch:*:*:domain/locations-*"]}]}})
+  [{"PolicyName" "RoomkeyTFunSQSAccess"
     "PolicyDocument" {"Version" "2012-10-17"
                       "Statement" [{"Effect" "Allow"
                                     "Action" ["sqs:ReceiveMessage" "sqs:GetQueueAttributes"
@@ -37,7 +46,7 @@
                                                        ::lambda/function-name lambda-name
                                                        ::lambda/batch-size 1})]
     (-> {(keyword cloudsearch-queue-name) cloudsearch-queue
-         :t-fun-cloudsearch-load-esm cs-queue->lambda}
+         (-> cloudsearch-queue-name (str "-esm") keyword) cs-queue->lambda}
         (c/template "Resources to support t-fun")
         e/encode)))
 
@@ -91,7 +100,7 @@
       (let [stack (cf-describe cf-client stack-name)
             status (get-in stack [:Stacks 0 :StackStatus])]
         (cond
-          (:ErrorResponse stack) stack
+          (:ErrorResponse stack) (:ErrorResponse stack)
           (#{"CREATE_COMPLETE" "UPDATE_COMPLETE"} status) nil
           (#{"ROLLBACK_COMPLETE" "UPDATE_ROLLBACK_COMPLETE"} status) :failed
           (> (System/currentTimeMillis) end-time) (format "Timeout waiting. Status %s" status)
@@ -114,7 +123,7 @@
                      "No updates are to be performed."))
         create-result
         (when-let [result (wait cf-client stack-name)]
-          (format "%s waiting for %s to stablize" (name result) stack-name))))
+          (format "%s waiting for %s to stabilize" (name result) stack-name))))
     (catch Exception e
       e)))
 
