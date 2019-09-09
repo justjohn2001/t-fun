@@ -129,7 +129,8 @@
 
 (defn datomic-transactions
   [dt-conn tx-id]
-  (cast/dev {:msg (format "Loading tx %d" tx-id)})
+  (cast/dev {:msg (format "Loading tx %d" tx-id)
+             ::app "t-fun"})
   (let [tx (d/tx-range dt-conn
                        {:start tx-id
                         :end (inc tx-id)})]
@@ -185,6 +186,7 @@
 (defn sqs-send
   [sqs-client sqs-url op s]
   (cast/event {:msg (format "Sending batch to sqs to %s" sqs-url)
+               ::app "t-fun"
                ::section "SQS-SEND"})
   (aws/invoke sqs-client {:op :SendMessage
                           :request {:QueueUrl sqs-url
@@ -253,7 +255,9 @@
   [{:keys [input]}]
   (let [options (try (edn/read-string input) (catch Exception e {}))
         _ (cast/event {:msg "options"
+                       ::app "t-fun"
                        ::options options
+                       ::app "t-fun"
                        ::section "QUEUE-UPDATES"})
         dt-conn (-> (datomic-config @core/stage)
                     d/client
@@ -265,7 +269,8 @@
                                :where [?e :rk.param/name ?name]]
                              (d/db dt-conn)
                              tx-param-name))
-        _ (cast/event {:msg "last-tx" ::e e ::last-tx last-tx ::r r})
+        _ (cast/event {:msg "last-tx" ::e e ::last-tx last-tx ::r r
+                       ::app "t-fun"})
         {:keys [max-t sent deleted]
          :or {sent 0 deleted 0}} (walk-transactions dt-conn
                                                     (or (:start-tx options) (inc last-tx))
@@ -275,13 +280,15 @@
                             :rk.param/name tx-param-name
                             :rk.param/int-value max-t}]})
     (let [msg (format "Read through transaction %d. Sent %d updates, %d deletes." max-t sent deleted)]
-      (cast/event {:msg msg ::section "QUEUE-UPDATES"})
+      (cast/event {:msg msg ::section "QUEUE-UPDATES"
+                   ::app "t-fun"})
       msg)))
 
 (defn upload-docs
   [client rows]
   (when (seq rows)
     (cast/event {:msg (format "Starting batch of %d" (count rows))
+                 ::app "t-fun"
                  ::section "LOAD-LOCATIONS"})
     (let [docs (-> rows
                    (json/generate-string {:escape-non-ascii true})
@@ -323,6 +330,7 @@
                domain-status-list (aws/invoke cs-client {:op :DescribeDomains :request {:DomainNames [domain-name]}})
                endpoint (get-in domain-status-list [:DomainStatusList 0 :DocService :Endpoint])]
            (cast/event {:msg "cloudsearch client details"
+                        ::app "t-fun"
                         ::section "LOAD-LOCATIONS"
                         ::details {:domain-name domain-name
                                    :domain-status-list domain-status-list
@@ -345,6 +353,7 @@
                       (let [{:keys [op ids] :as request} (-> record :body edn/read-string)]
                         (case op
                           :delete (do (cast/event {:msg (format "processing batch of %d deletes" (count ids))
+                                                   ::app "t-fun"
                                                    ::section "LOAD-LOCATIONS"
                                                    ::deletes ids})
                                       (upload-docs doc-client
@@ -352,6 +361,7 @@
                                                                    (map #(hash-map :type "delete" :id %)))
                                                              ids)))
                           :update (do (cast/event {:msg (format "processing batch of %d updates" (count ids))
+                                                   ::app "t-fun"
                                                    ::section "LOAD-LOCATIONS"
                                                    ::updates ids})
                                       (let [location-data (location-details (d/db dt-conn) ids)]
@@ -364,6 +374,7 @@
                                              vals
                                              (upload-docs doc-client))))
                           (do (cast/alert {:msg "unknown operation"
+                                           ::app "t-fun"
                                            ::request request
                                            ::input input
                                            ::section "LOAD-LOCATIONS"                                           })
