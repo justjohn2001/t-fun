@@ -40,9 +40,18 @@
                                     "Resource" ["arn:aws:sqs:*:*:t-fun-*"
                                                 "arn:aws:cloudsearch:*:*:domain/locations-*"]}]}}])
 
+(def make-stack-name
+  (memoize (fn make-stack-name* []
+             (let [{:keys [app-name deployment-group]} (ion/get-app-info)]
+               (format "%s-%s-infrastructure" app-name deployment-group)))))
+
+(def make-cloudsearch-load-queue-name
+  (memoize (fn []
+             (format "%s-%s" (make-stack-name) "cloudsearch-load-queue"))))
+
 (defn five-minute-rule
-  [prefix fn-names]
-  (events/rule {::events/name (format "%s-5-minutes" prefix)
+  [fn-names]
+  (events/rule {::events/name (format "%s-5-minutes" (make-stack-name))
                 ::events/schedule-expression "rate(5 minutes)"
                 ::events/targets (mapv (fn [name]
                                          {::events/id name
@@ -51,19 +60,27 @@
                                        fn-names)}))
 
 (defn make-template
-  [prefix]
-  (let [prefixed-name (fn make-prefixed-name [s] (format "%s-%s" prefix s))
-        cloudsearch-queue-name (prefixed-name "cloudsearch-load-queue")
+  []
+  (let [prefixed-name (fn make-prefixed-name [s] (format "%s-%s" (make-stack-name) s))
+        cloudsearch-queue-name (make-cloudsearch-load-queue-name)
         cloudsearch-queue (sqs/queue {::sqs.q/queue-name cloudsearch-queue-name
                                       ::sqs.q/visibility-timeout 300})
-        lambda-name (format "%s-cloudsearch-locations" (get (ion/get-app-info) :deployment-group))
+        locations-lambda-name (format "%s-cloudsearch-locations" (get (ion/get-app-info) :deployment-group))
+        queue-lambda-name (format "%s-%s" (-> (ion/get-app-info) :deployment-group) "queue-updates")
         cs-queue->lambda (lambda/event-source-mapping {::lambda/event-source-arn (c/xref (keyword cloudsearch-queue-name)
                                                                                          :arn)
-                                                       ::lambda/function-name lambda-name
-                                                       ::lambda/batch-size 1})]
+                                                       ::lambda/function-name locations-lambda-name
+                                                       ::lambda/batch-size 1})
+        queue-lambda-perms (lambda/permission {::lambda/action "lambda:InvokeFunction"
+                                               ::lambda/function-name queue-lambda-name
+                                               ::lambda/principal "events.amazonaws.com"})]
     (-> {(keyword cloudsearch-queue-name) cloudsearch-queue
          (-> cloudsearch-queue-name (str "-esm") keyword) cs-queue->lambda
-         (-> (prefixed-name "5-minute-rule") keyword) (five-minute-rule prefix [(format "%s-%s" (-> (ion/get-app-info) :deployment-group) "queue-updates")])}
+
+         (-> (prefixed-name "5-minute-rule") keyword)
+         (five-minute-rule [queue-lambda-name])
+
+         (-> (prefixed-name "5-minute-rule-perms") keyword) queue-lambda-perms}
         (c/template "Resources to support t-fun")
         e/encode)))
 
@@ -123,23 +140,18 @@
           :else (do (Thread/sleep interval)
                     (recur (if (< interval 10000) (* 2 interval) interval))))))))
 
-(defn make-stack-name []
-  (let [{:keys [app-name deployment-group]} (ion/get-app-info)]
-    (format "%s-%s-infrastructure" app-name deployment-group)))
-
 (defn build-stack
   [cf-client deployment-group]
   (try
     (cast/event {:msg "INFRASTRUCTURE - build-stack"})
-    (let [stack-name (make-stack-name)
-          template (make-template stack-name)
-          create-result (create-or-update cf-client stack-name template)]
+    (let [template (make-template)
+          create-result (create-or-update cf-client (make-stack-name) template)]
       (if (and (:ErrorResponse create-result)
                (not= (get-in create-result [:ErrorResponse :Error :Message])
                      "No updates are to be performed."))
         create-result
-        (when-let [result (wait cf-client stack-name)]
-          (format "%s waiting for %s to stabilize" (name result) stack-name))))
+        (when-let [result (wait cf-client (make-stack-name))]
+          (format "%s waiting for %s to stabilize" (name result) (make-stack-name)))))
     (catch Exception e
       e)))
 

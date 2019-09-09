@@ -227,9 +227,7 @@
   (let [sqs-client (aws/client {:api :sqs})
         sqs-url (:QueueUrl (aws/invoke sqs-client
                                        {:op :GetQueueUrl
-                                        :request {:QueueName (format "%s-%s"
-                                                                     (inf/make-stack-name)
-                                                                     "cloudsearch-load")}}))
+                                        :request {:QueueName (inf/make-cloudsearch-load-queue-name)}}))
         stop-time (+ (System/currentTimeMillis) timeout)
         attribute-ids (get-attribute-ids dt-conn)
         id->ident (into {} (map (juxt :db/id :db/ident)
