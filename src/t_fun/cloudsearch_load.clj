@@ -257,7 +257,6 @@
         _ (cast/event {:msg "options"
                        ::app "t-fun"
                        ::options options
-                       ::app "t-fun"
                        ::section "QUEUE-UPDATES"})
         dt-conn (-> (datomic-config @core/stage)
                     d/client
