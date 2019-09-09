@@ -78,7 +78,7 @@
   [{:keys [rk.place/id iata/airport-code
            rk.place/display-name rk.location/hotel-count rk.geo/latitude rk.geo/longitude
            rk.place/name rk.place/type
-           is_primary (nil? alt-id)]
+           alt-id]
     {region-code :rk.region/code region-name :rk.region/name} :rk.place/region
     {country-code :rk.country/code country-name :rk.country/name} :rk.place/country
     :as m}]
@@ -104,7 +104,7 @@
                       :latlng (format "%.6f,%.6f" latitude longitude)
                       :name name
                       :place_type type
-                      :is_primary is_primary}
+                      :is_primary (nil? alt-id)}
                airport-code (assoc :airport_code airport-code)
                region-code (assoc :region_code region-code)
                region-name (assoc :region region-name))}))
@@ -258,12 +258,14 @@
         dt-conn (-> (datomic-config @core/stage)
                     d/client
                     (d/connect {:db-name "rk"}))
-        {e :db/id last-tx :rk.param/int-value} (ffirst (d/q '[:find (pull ?e [:db/id :rk.param/int-value])
-                                                              :in $ ?name
-                                                              :where [?e :rk.param/name ?name]]
-                                                            (d/db dt-conn)
-                                                            tx-param-name))
-        _ (cast/event {:msg "last-tx" ::e e ::last-tx last-tx})
+        {e :db/id last-tx :rk.param/int-value
+         :or {last-tx 0}
+         :as r} (ffirst (d/q '[:find (pull ?e [:db/id :rk.param/int-value])
+                               :in $ ?name
+                               :where [?e :rk.param/name ?name]]
+                             (d/db dt-conn)
+                             tx-param-name))
+        _ (cast/event {:msg "last-tx" ::e e ::last-tx last-tx ::r r})
         {:keys [max-t sent deleted]
          :or {sent 0 deleted 0}} (walk-transactions dt-conn
                                                     (or (:start-tx options) (inc last-tx))
