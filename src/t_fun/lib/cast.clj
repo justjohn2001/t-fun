@@ -2,6 +2,8 @@
   (:require [datomic.ion.cast :as cast]
             [clojure.tools.logging :as log]))
 
+(cast/initialize-redirect :stderr)
+
 (defn alert [m]
   (try (cast/alert m)
        (catch Exception e

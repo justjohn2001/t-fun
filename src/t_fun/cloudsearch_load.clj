@@ -62,8 +62,8 @@
             (rest suffix))
      (conj result (apply str prefix)))))
 
-;;; Mirror in apij.models.location
-
+;;; A version of this function also exists in apij.models.location to build queries
+;;; against the fields. Please keep both in sync.
 (defn make-starts-with
   [s & [split-re]]
   (-> s
@@ -252,7 +252,9 @@
 (defn queue-updates
   [{:keys [input]}]
   (let [options (try (edn/read-string input) (catch Exception e {}))
-        _ (cast/event {:msg "options" ::options options})
+        _ (cast/event {:msg "options"
+                       ::options options
+                       ::section "QUEUE-UPDATES"})
         dt-conn (-> (datomic-config @core/stage)
                     d/client
                     (d/connect {:db-name "rk"}))
@@ -261,6 +263,7 @@
                                                               :where [?e :rk.param/name ?name]]
                                                             (d/db dt-conn)
                                                             tx-param-name))
+        _ (cast/event {:msg "last-tx" ::e e ::last-tx last-tx})
         {:keys [max-t sent deleted]
          :or {sent 0 deleted 0}} (walk-transactions dt-conn
                                                     (or (:start-tx options) (inc last-tx))

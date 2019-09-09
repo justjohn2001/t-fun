@@ -5,6 +5,7 @@
    [cognitect.aws.client.api :as aws]
    [cognitect.aws.util :as aws.util]
    [crucible.core :as c]
+   [crucible.aws.events :as events]
    [crucible.aws.lambda :as lambda]
    [crucible.aws.iam :as iam]
    [crucible.aws.sqs :as sqs]
@@ -14,7 +15,10 @@
    [t-fun.lib.cast :as cast])
   (:import java.util.UUID))
 
-(def default-arn-role "arn:aws:iam::304062982811:role/CfAdministratorAccess")
+(def account-id "304062982811")
+(def region "us-east-1")
+
+(def default-arn-role (format "arn:aws:iam::%s:role/CfAdministratorAccess" account-id))
 
 (def t-fun-query-group-policies
   #_(iam/policy {::iam/policy-name "RoomkeyTfunSQSAccess"
@@ -24,6 +28,7 @@
                                                                         "sqs:SendMessage" "sqs:SendMessageBatch"
                                                                         "cloudsearch:document" "cloudsearch:search" "cloudsearch:DescribeDomains"]
                                                           ::iam/resource ["arn:aws:sqs:*:*:t-fun-*"
+                                                                          interval (* 10 1000)                              ;; check every 10 seconds
                                                                           "arn:aws:cloudsearch:*:*:domain/locations-*"]}]}})
   [{"PolicyName" "RoomkeyTFunSQSAccess"
     "PolicyDocument" {"Version" "2012-10-17"
@@ -35,9 +40,20 @@
                                     "Resource" ["arn:aws:sqs:*:*:t-fun-*"
                                                 "arn:aws:cloudsearch:*:*:domain/locations-*"]}]}}])
 
+(defn five-minute-rule
+  [prefix fn-names]
+  (events/rule {::events/name (format "%s-5-minutes" prefix)
+                ::events/schedule-expression "rate(5 minutes)"
+                ::events/targets (mapv (fn [name]
+                                         {::events/id name
+                                          ::events/arn (format "arn:aws:lambda:%s:%s:function:%s"
+                                                               region account-id name)})
+                                       fn-names)}))
+
 (defn make-template
   [prefix]
-  (let [cloudsearch-queue-name (format "%s-cloudsearch-load" prefix)
+  (let [prefixed-name (fn make-prefixed-name [s] (format "%s-%s" prefix s))
+        cloudsearch-queue-name (prefixed-name "cloudsearch-load-queue")
         cloudsearch-queue (sqs/queue {::sqs.q/queue-name cloudsearch-queue-name
                                       ::sqs.q/visibility-timeout 300})
         lambda-name (format "%s-cloudsearch-locations" (get (ion/get-app-info) :deployment-group))
@@ -46,7 +62,8 @@
                                                        ::lambda/function-name lambda-name
                                                        ::lambda/batch-size 1})]
     (-> {(keyword cloudsearch-queue-name) cloudsearch-queue
-         (-> cloudsearch-queue-name (str "-esm") keyword) cs-queue->lambda}
+         (-> cloudsearch-queue-name (str "-esm") keyword) cs-queue->lambda
+         (-> (prefixed-name "5-minute-rule") keyword) (five-minute-rule prefix [(format "%s-%s" (-> (ion/get-app-info) :deployment-group) "queue-updates")])}
         (c/template "Resources to support t-fun")
         e/encode)))
 
@@ -94,9 +111,8 @@
   [cf-client stack-name]
   (cast/event {:msg (format "INFRASTRUCTURE - waiting on %s" stack-name)})
   (let [duration (* 10 60 1000)                           ;; 10 minutes
-        interval (* 10 1000)                              ;; check every 10 seconds
         end-time (+ (System/currentTimeMillis) duration)]
-    (loop []
+    (loop [interval 1000]
       (let [stack (cf-describe cf-client stack-name)
             status (get-in stack [:Stacks 0 :StackStatus])]
         (cond
@@ -105,7 +121,7 @@
           (#{"ROLLBACK_COMPLETE" "UPDATE_ROLLBACK_COMPLETE"} status) :failed
           (> (System/currentTimeMillis) end-time) (format "Timeout waiting. Status %s" status)
           :else (do (Thread/sleep interval)
-                    (recur)))))))
+                    (recur (if (< interval 10000) (* 2 interval) interval))))))))
 
 (defn make-stack-name []
   (let [{:keys [app-name deployment-group]} (ion/get-app-info)]
