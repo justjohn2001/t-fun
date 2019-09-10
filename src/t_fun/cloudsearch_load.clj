@@ -226,17 +226,18 @@
 (defn walk-transactions
   [dt-conn start-tx timeout]
   (let [sqs-client (aws/client {:api :sqs})
+        queue-name (inf/make-cloudsearch-load-queue-name)
         {sqs-url :QueueUrl :as sqs-url-response} (aws/invoke sqs-client
                                                              {:op :GetQueueUrl
-                                                              :request {:QueueName (inf/make-cloudsearch-load-queue-name)}})
+                                                              :request {:QueueName queue-name}})
         stop-time (+ (System/currentTimeMillis) timeout)
         attribute-ids (get-attribute-ids dt-conn)
         id->ident (into {} (map (juxt :db/id :db/ident)
                                 attribute-ids))
         location-attributes (into #{} (map :db/id attribute-ids))]
-    (cast/alert {:msg "sqs-url-response" ::response sqs-url-response})
     (if (nil? sqs-url)
       (cast/alert {:msg "Error getting sqs-url"
+                   ::queue-name queue-name
                    ::response sqs-url-response
                    ::app "t-fun"
                    ::section "walk-transaction"})
