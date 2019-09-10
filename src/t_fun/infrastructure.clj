@@ -219,7 +219,14 @@
               (let [cf-client (aws/client {:api :cloudformation})
                     _ (cast/event {:msg (format "INFRASTRUCTURE - Stack updates starting on %s" deployment-group)})
                     result (some #(% cf-client deployment-group)
-                                 [wait adjust-deployment-group wait build-stack])]
+                                 [(fn [client group]
+                                    (let [result (wait client group)]
+                                      (if (or (nil? result) (= :failed result)) ;; :failed indicates a COMPLETE state, so okay to proceed.
+                                        nil
+                                        result)))
+                                  adjust-deployment-group
+                                  wait
+                                  build-stack])]
                 (if result
                   (cast/alert {:msg "INFRASTRUCTURE - Stack build result" ::result result})
                   (cast/event {:msg "INFRASTRUCTURE - Stack created/updated successfully"}))
