@@ -203,7 +203,8 @@
                                  (d/q '[:find ?e ?id
                                         :in $ [?e ...]
                                         :where [?e :rk.place/id ?id]]
-                                      (d/db dt-conn) (keys pending)))
+                                      (d/db dt-conn)
+                                      (keys pending)))
                     updates (vals id-map)
                     deletes (apply dissoc pending (keys id-map))
                     send-result (transduce (comp (partition-all 1000)
@@ -225,17 +226,18 @@
 (defn walk-transactions
   [dt-conn start-tx timeout]
   (let [sqs-client (aws/client {:api :sqs})
-        {sqs-url :QueueUrl :as sqs-url-request} (aws/invoke sqs-client
-                                                            {:op :GetQueueUrl
-                                                             :request {:QueueName (inf/make-cloudsearch-load-queue-name)}})
+        {sqs-url :QueueUrl :as sqs-url-response} (aws/invoke sqs-client
+                                                             {:op :GetQueueUrl
+                                                              :request {:QueueName (inf/make-cloudsearch-load-queue-name)}})
         stop-time (+ (System/currentTimeMillis) timeout)
         attribute-ids (get-attribute-ids dt-conn)
         id->ident (into {} (map (juxt :db/id :db/ident)
                                 attribute-ids))
         location-attributes (into #{} (map :db/id attribute-ids))]
+    (cast/alert {:msg "sqs-url-response" ::response sqs-url-response})
     (if (nil? sqs-url)
       (cast/alert {:msg "Error getting sqs-url"
-                   ::response sqs-url-request
+                   ::response sqs-url-response
                    ::app "t-fun"
                    ::section "walk-transaction"})
       (transduce (comp (take-while* (fn [_] (< (System/currentTimeMillis) stop-time)))
