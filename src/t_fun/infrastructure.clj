@@ -40,7 +40,7 @@
                                     "Resource" ["arn:aws:sqs:*:*:t-fun-*"
                                                 "arn:aws:cloudsearch:*:*:domain/locations-*"]}
                                    {"Effect" "Allow"
-                                    "Action" ["sqs:GetQueueUrl"]
+                                    "Action" "sqs:GetQueueUrl"
                                     "Resource" "*"}]}}])
 
 (def make-stack-name
