@@ -176,9 +176,9 @@
   (cast/event {:msg "INFRASTRUCTURE - adjust-deployment-group"})
   (let [app-name (:app-name (ion/get-app-info))
         response (cf-describe cf-client deployment-group)
-        {:keys [ErrorResponse TemplateBody]} (aws/invoke cf-client
-                                                         {:op :GetTemplate
-                                                          :request {:StackName deployment-group}})]
+        {:keys [ErrorResponse TemplateBody] :as template} (aws/invoke cf-client
+                                                                      {:op :GetTemplate
+                                                                       :request {:StackName deployment-group}})]
     (cond (:ErrorResponse response) response
           ErrorResponse template
           :else (let [{:keys [Parameters Capabilities]} (get-in response [:Stacks 0])
