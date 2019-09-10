@@ -38,10 +38,10 @@
                                               "sqs:SendMessage" "sqs:SendMessageBatch"
                                               "cloudsearch:document" "cloudsearch:search" "cloudsearch:DescribeDomains"]
                                     "Resource" ["arn:aws:sqs:*:*:t-fun-*"
-                                                "arn:aws:cloudsearch:*:*:domain/locations-*"]
-                                    {"Effect" "Allow"
-                                     "Action" ["sqs:GetQueueUrl"]
-                                     "Resource" "*"}}]}}])
+                                                "arn:aws:cloudsearch:*:*:domain/locations-*"]}
+                                   {"Effect" "Allow"
+                                    "Action" ["sqs:GetQueueUrl"]
+                                    "Resource" "*"}]}}])
 
 (def make-stack-name
   (memoize (fn make-stack-name* []
