@@ -36,6 +36,7 @@
                                     "Action" ["sqs:ReceiveMessage" "sqs:GetQueueAttributes"
                                               "sqs:DeleteMessage" "sqs:DeleteMessageBatch"
                                               "sqs:SendMessage" "sqs:SendMessageBatch"
+                                              "sqs:GetQueueUrl"
                                               "cloudsearch:document" "cloudsearch:search" "cloudsearch:DescribeDomains"]
                                     "Resource" ["arn:aws:sqs:*:*:t-fun-*"
                                                 "arn:aws:cloudsearch:*:*:domain/locations-*"]}]}}])
@@ -158,12 +159,11 @@
 (defn adjust-template
   [template]
   (-> template
-      :TemplateBody
       json/decode
       (update-in ["Resources" "DatomicLambdaRole" "Properties" "Policies"]
                  (fn [policies]
                    (into []
-                         (filter #(not (re-find #"RoomkeyTfun.*"
+                         (filter #(not (re-find #"RoomkeyTFun.*"
                                                 (get-in % ["PolicyName"])))
                                  policies)))) ;; remove any existing Tfun policies
       (update-in ["Resources" "DatomicLambdaRole" "Properties" "Policies"]
@@ -176,20 +176,20 @@
   (cast/event {:msg "INFRASTRUCTURE - adjust-deployment-group"})
   (let [app-name (:app-name (ion/get-app-info))
         response (cf-describe cf-client deployment-group)
-        template (aws/invoke cf-client
-                             {:op :GetTemplate
-                              :request {:StackName deployment-group}})]
+        {:keys [ErrorResponse TemplateBody]} (aws/invoke cf-client
+                                                         {:op :GetTemplate
+                                                          :request {:StackName deployment-group}})]
     (cond (:ErrorResponse response) response
-          (:ErrorResponse template) template
+          ErrorResponse template
           :else (let [{:keys [Parameters Capabilities]} (get-in response [:Stacks 0])
-                      adjusted-template (adjust-template template)
+                      adjusted-template (adjust-template TemplateBody)
                       s3-client (aws/client {:api :s3})
                       bucket-name "rk-persist"
                       key-name (format "%s/template/%s-%08x"
                                        app-name
                                        deployment-group
                                        (hash adjusted-template))]
-                  (when (not= (json/encode template) adjusted-template)
+                  (when (not= (json/encode TemplateBody) adjusted-template)
                     (cast/event {:msg "INFRASTRUCTURE - Updating query group stack" ::bucket bucket-name ::key-name key-name})
                     (aws/invoke s3-client
                                 {:op :PutObject
