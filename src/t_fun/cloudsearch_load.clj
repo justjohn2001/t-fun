@@ -100,7 +100,7 @@
                                                                          (apply conj coll (expand-n-gram i)))
                                                                        (sorted-set))))
 
-                      :hotel_count (or hotel-count 0)
+                      :hotel_count hotel-count
                       :latlng (format "%.6f,%.6f" latitude longitude)
                       :name name
                       :place_type type
@@ -217,7 +217,8 @@
                                                         (d/q '[:find ?id
                                                                :in $ [?e ...]
                                                                :where [?e :rk.place/id ?id]]
-                                                             (-> dt-conn d/db (d/as-of (dec tx))))))
+                                                             (-> dt-conn d/db (d/as-of (dec tx)))
+                                                             deletes)))
                                               cat
                                               (map pr-str)
                                               (map (partial sqs-send sqs-client sqs-url :delete)))
