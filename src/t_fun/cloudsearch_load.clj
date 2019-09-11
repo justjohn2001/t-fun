@@ -207,14 +207,23 @@
                                       (keys pending)))
                     updates (vals id-map)
                     deletes (apply dissoc pending (keys id-map))
-                    send-result (transduce (comp (partition-all 1000)
-                                                 (map pr-str)
-                                                 (map (partial sqs-send sqs-client sqs-url :update)))
-                                           conj
-                                           []
-                                           updates)]
-                                        ; TODO - send deletes
-                {:sent (count updates) :send-results send-result :deleted (count deletes)}))))
+                    send-result (into []
+                                      (comp (partition-all 1000)
+                                            (map pr-str)
+                                            (map (partial sqs-send sqs-client sqs-url :update)))
+                                      updates)
+                    delete-result (into []
+                                        (comp (mapcat (fn [[tx v]]
+                                                        (d/q '[:find ?id
+                                                               :in $ [?e ...]
+                                                               :where [?e :rk.place/id ?id]]
+                                                             (-> dt-conn d/db (d/as-of (dec tx))))))
+                                              cat
+                                              (map pr-str)
+                                              (map (partial sqs-send sqs-client sqs-url :delete)))
+                                        (group-by deletes (keys deletes)))]
+                {:sent (count updates) :send-results send-result
+                 :deleted (count deletes) :delete-results delete-result}))))
     ([acc [e t-val]]
      (cond-> acc
        e (update-in [:pending e] (fnil max 0) t-val)
