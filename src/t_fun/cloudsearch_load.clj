@@ -223,17 +223,13 @@
 (defn type-and-tx [e]
   [(first e) (nth e 2)])
 
-(defn make-arn
-  [service resource-name]
-  (format "arn:aws:%s:*:*:%s" service resource-name))
-
 (defn walk-transactions
   [dt-conn start-tx timeout]
   (let [sqs-client (aws/client {:api :sqs})
         queue-name (inf/make-cloudsearch-load-queue-name)
         {sqs-url :QueueUrl :as sqs-url-response} (aws/invoke sqs-client
                                                              {:op :GetQueueUrl
-                                                              :request {:QueueName (make-arn "sqs" queue-name)}})
+                                                              :request {:QueueName queue-name}})
         stop-time (+ (System/currentTimeMillis) timeout)
         attribute-ids (get-attribute-ids dt-conn)
         id->ident (into {} (map (juxt :db/id :db/ident)
