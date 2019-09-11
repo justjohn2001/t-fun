@@ -255,10 +255,10 @@
           (do (Thread/sleep 10000)
               (recur))
 
-          :else domain-status)))))
+          :else nil)))))
 
 (def cs-domain-error
-  (future (let [stage (:stage (ion/get-env))]
+  (future (let [stage (name @t-fun.core/stage)]
             (if-not stage
               (do (cast/alert {:msg "cs-domain-error unable to determine stage"
                                ::app-info (ion/get-env)})
