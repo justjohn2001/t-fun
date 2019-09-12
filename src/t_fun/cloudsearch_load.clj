@@ -218,7 +218,7 @@
                                                                :in $ [?e ...]
                                                                :where [?e :rk.place/id ?id]]
                                                              (-> dt-conn d/db (d/as-of (dec tx)))
-                                                             deletes)))
+                                                             v)))
                                               cat
                                               (map pr-str)
                                               (map (partial sqs-send sqs-client sqs-url :delete)))
