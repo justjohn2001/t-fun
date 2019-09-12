@@ -14,7 +14,8 @@
    [crucible.aws.sqs.queue :as sqs.q]
    [crucible.encoding :as e]
    [datomic.ion :as ion]
-   [t-fun.lib.cast :as cast])
+   [t-fun.lib.cast :as cast]
+   [t-fun.core :as core])
   (:import java.util.UUID))
 
 (def account-id "304062982811")
@@ -259,7 +260,7 @@
           :else nil)))))
 
 (def cs-domain-error
-  (future (let [stage (name @t-fun.core/stage)]
+  (future (let [stage (name @core/stage)]
             (if-not stage
               (do (cast/alert {:msg "cs-domain-error unable to determine stage"
                                ::app-info (ion/get-env)})
