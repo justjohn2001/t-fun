@@ -300,7 +300,7 @@
 (defn upload-docs
   [client rows]
   (when (seq rows)
-    (cast/event {:msg (format "Starting batch of %d" (count rows))
+    (cast/event {:msg (format "Uploading to cloudsearch batch of %d" (count rows))
                  ::section "LOAD-LOCATIONS"})
     (let [docs (-> rows
                    (json/generate-string {:escape-non-ascii true})
@@ -359,32 +359,36 @@
           records (-> input
                       (json/parse-string true)
                       :Records)
-          doc-client @locations-doc-client]
-      (pr-str
-       (sequence (map (fn [record]
-                        (let [{:keys [op ids] :as request} (-> record :body edn/read-string)]
-                          (case op
-                            :delete (do (cast/event {:msg (format "processing batch of %d deletes" (count ids))
-                                                     ::section "LOAD-LOCATIONS"
-                                                     ::deletes ids})
-                                        (upload-docs doc-client
-                                                     (sequence (comp (mapcat #(vector % (str % "-region_code")))
-                                                                     (map #(hash-map :type "delete" :id %)))
-                                                               ids)))
-                            :update (do (cast/event {:msg (format "processing batch of %d updates" (count ids))
-                                                     ::section "LOAD-LOCATIONS"
-                                                     ::updates ids})
-                                        (let [location-data (location-details (d/db dt-conn) ids)]
-                                          (->> location-data
-                                               (into {}
-                                                     (comp
-                                                      (mapcat #(cond-> [%]
-                                                                 (get-in % [:rk.place/region :rk.region/code]) (conj (make-alt-location %))))
-                                                      (map (juxt #(or (:alt-id %) (:rk.place/id %)) datomic->aws))))
-                                               vals
-                                               (upload-docs doc-client))))
-                            (throw (ex-info (format "Unknown operation - %s" op) {:request request}))))))
-                 records)))
+          doc-client @locations-doc-client
+          result (pr-str
+                  (sequence (map (fn [record]
+                                   (let [{:keys [op ids] :as request} (-> record :body edn/read-string)]
+                                     (case op
+                                       :delete (do (cast/event {:msg (format "processing batch of %d deletes" (count ids))
+                                                                ::section "LOAD-LOCATIONS"
+                                                                ::deletes ids})
+                                                   (upload-docs doc-client
+                                                                (sequence (comp (mapcat #(vector % (str % "-region_code")))
+                                                                                (map #(hash-map :type "delete" :id %)))
+                                                                          ids)))
+                                       :update (do (cast/event {:msg (format "processing batch of %d updates" (count ids))
+                                                                ::section "LOAD-LOCATIONS"
+                                                                ::updates ids})
+                                                   (let [location-data (location-details (d/db dt-conn) ids)]
+                                                     (->> location-data
+                                                          (into {}
+                                                                (comp
+                                                                 (mapcat #(cond-> [%]
+                                                                            (get-in % [:rk.place/region :rk.region/code]) (conj (make-alt-location %))))
+                                                                 (map (juxt #(or (:alt-id %) (:rk.place/id %)) datomic->aws))))
+                                                          vals
+                                                          (upload-docs doc-client))))
+                                       (throw (ex-info (format "Unknown operation - %s" op) {:request request}))))))
+                            records))]
+      (cast/event {:msg "load-location-to-cloudsearch done"
+                   ::section "LOAD-LOCATIONS"
+                   ::result result})
+      result)
     (catch Exception e
       (cast/alert {:msg "Exception in load-locations-to-cloudsearch"
                    ::exception e})
