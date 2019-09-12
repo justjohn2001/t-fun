@@ -363,40 +363,46 @@
                     (json/parse-string true)
                     :Records)
         doc-client @locations-doc-client]
-    (cast/event {:msg "Processing request"
-                 ::records records
-                 ::result (try
-                            (sequence (map (fn [record]
-                                             (let [{:keys [op ids] :as request} (-> record :body edn/read-string)]
-                                               (case op
-                                                 :delete (do (cast/event {:msg (format "processing batch of %d deletes" (count ids))
-                                                                          ::app "t-fun"
-                                                                          ::section "LOAD-LOCATIONS"
-                                                                          ::deletes ids})
-                                                             (upload-docs doc-client
-                                                                          (sequence (comp (mapcat #(vector % (str % "-region_code")))
-                                                                                          (map #(hash-map :type "delete" :id %)))
-                                                                                    ids)))
-                                                 :update (do (cast/event {:msg (format "processing batch of %d updates" (count ids))
-                                                                          ::app "t-fun"
-                                                                          ::section "LOAD-LOCATIONS"
-                                                                          ::updates ids})
-                                                             (let [location-data (location-details (d/db dt-conn) ids)]
-                                                               (->> location-data
-                                                                    (into {}
-                                                                          (comp
-                                                                           (mapcat #(cond-> [%]
-                                                                                      (get-in % [:rk.place/region :rk.region/code]) (conj (make-alt-location %))))
-                                                                           (map (juxt #(or (:alt-id %) (:rk.place/id %)) datomic->aws))))
-                                                                    vals
-                                                                    (upload-docs doc-client))))
-                                                 (do (cast/alert {:msg "unknown operation"
-                                                                  ::app "t-fun"
-                                                                  ::request request
-                                                                  ::input input
-                                                                  ::section "LOAD-LOCATIONS"                                           })
-                                                     (throw (ex-info (format "Unknown operation - %s" op) {:request request})))
-                                                 ))))
-                                      records)
-                            (catch Exception e
-                              (pr-str e)))})))
+    (pr-str
+     (sequence (map (fn [record]
+                      (let [{:keys [op ids] :as request} (-> record :body edn/read-string)]
+                        (case op
+                          :delete (do (cast/event {:msg (format "processing batch of %d deletes" (count ids))
+                                                   ::app "t-fun"
+                                                   ::section "LOAD-LOCATIONS"
+                                                   ::deletes ids})
+                                      (try
+                                        (upload-docs doc-client
+                                                     (sequence (comp (mapcat #(vector % (str % "-region_code")))
+                                                                     (map #(hash-map :type "delete" :id %)))
+                                                               ids))
+                                        (catch Exception e
+                                          (cast/alert {:msg "Exception handling delete"
+                                                       ::exception e
+                                                       ::record record}))))
+                          :update (do (cast/event {:msg (format "processing batch of %d updates" (count ids))
+                                                   ::app "t-fun"
+                                                   ::section "LOAD-LOCATIONS"
+                                                   ::updates ids})
+                                      (try (let [location-data (location-details (d/db dt-conn) ids)]
+                                             (->> location-data
+                                                  (into {}
+                                                        (comp
+                                                         (mapcat #(cond-> [%]
+                                                                    (get-in % [:rk.place/region :rk.region/code]) (conj (make-alt-location %))))
+                                                         (map (juxt #(or (:alt-id %) (:rk.place/id %)) datomic->aws))))
+                                                  vals
+                                                  (upload-docs doc-client)))
+                                           (catch Exception e
+                                             (cast/alert {:msg "Exception handling update"
+                                                          ::exception e
+                                                          ::record record}))))
+                          (do (cast/alert {:msg "unknown operation"
+                                           ::app "t-fun"
+                                           ::request request
+                                           ::input input
+                                           ::section "LOAD-LOCATIONS"                                           })
+                              (throw (ex-info (format "Unknown operation - %s" op) {:request request})))
+                          ))))
+               records))
+    ))
