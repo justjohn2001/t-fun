@@ -129,8 +129,8 @@
 
 (defn datomic-transactions
   [dt-conn tx-id]
-  (cast/dev {:msg (format "Loading tx %d" tx-id)
-             ::app "t-fun"})
+  (cast/dev {:msg "Loading tx"
+             ::tx-id tx-id})
   (let [tx (d/tx-range dt-conn
                        {:start tx-id
                         :end (inc tx-id)})]
@@ -185,9 +185,8 @@
 
 (defn sqs-send
   [sqs-client sqs-url op s]
-  (cast/event {:msg (format "Sending batch to sqs to %s" sqs-url)
-               ::app "t-fun"
-               ::section "SQS-SEND"})
+  (cast/event {:msg "Sending batch to sqs"
+               ::sqs-url sqs-url})
   (aws/invoke sqs-client {:op :SendMessage
                           :request {:QueueUrl sqs-url
                                     :MessageBody (format "{:op %s :ids %s}" op s)}}))
@@ -249,7 +248,6 @@
       (cast/alert {:msg "Error getting sqs-url"
                    ::queue-name queue-name
                    ::response sqs-url-response
-                   ::app "t-fun"
                    ::section "walk-transaction"})
       (transduce (comp (take-while* (fn [_] (< (System/currentTimeMillis) stop-time)))
                        cat
@@ -271,10 +269,6 @@
   [{:keys [input]}]
   (try
     (let [options (try (edn/read-string input) (catch Exception e {}))
-          _ (cast/event {:msg "options"
-                         ::app "t-fun"
-                         ::options options
-                         ::section "QUEUE-UPDATES"})
           dt-conn (-> (datomic-config @core/stage)
                       d/client
                       (d/connect {:db-name "rk"}))
@@ -285,8 +279,6 @@
                                  :where [?e :rk.param/name ?name]]
                                (d/db dt-conn)
                                tx-param-name))
-          _ (cast/event {:msg "last-tx" ::e e ::last-tx last-tx ::r r
-                         ::app "t-fun"})
           {:keys [max-t sent deleted]
            :or {sent 0 deleted 0}} (walk-transactions dt-conn
                                                       (or (:start-tx options) (inc last-tx))
@@ -296,7 +288,8 @@
                               :rk.param/name tx-param-name
                               :rk.param/int-value max-t}]})
       (let [msg (format "Read through transaction %d. Sent %d updates, %d deletes." max-t sent deleted)]
-        (cast/event {:msg msg ::section "QUEUE-UPDATES"
+        (cast/event {:msg msg
+                     ::section "QUEUE-UPDATES"
                      ::app "t-fun"})
         msg))
     (catch Exception e
@@ -308,7 +301,6 @@
   [client rows]
   (when (seq rows)
     (cast/event {:msg (format "Starting batch of %d" (count rows))
-                 ::app "t-fun"
                  ::section "LOAD-LOCATIONS"})
     (let [docs (-> rows
                    (json/generate-string {:escape-non-ascii true})
@@ -350,7 +342,6 @@
                domain-status-list (aws/invoke cs-client {:op :DescribeDomains :request {:DomainNames [domain-name]}})
                endpoint (get-in domain-status-list [:DomainStatusList 0 :DocService :Endpoint])]
            (cast/event {:msg "cloudsearch client details"
-                        ::app "t-fun"
                         ::section "LOAD-LOCATIONS"
                         ::details {:domain-name domain-name
                                    :domain-status-list domain-status-list
@@ -374,16 +365,13 @@
                         (let [{:keys [op ids] :as request} (-> record :body edn/read-string)]
                           (case op
                             :delete (do (cast/event {:msg (format "processing batch of %d deletes" (count ids))
-                                                     ::app "t-fun"
                                                      ::section "LOAD-LOCATIONS"
                                                      ::deletes ids})
                                         (upload-docs doc-client
                                                      (sequence (comp (mapcat #(vector % (str % "-region_code")))
                                                                      (map #(hash-map :type "delete" :id %)))
-                                                               ids))
-                                        )
+                                                               ids)))
                             :update (do (cast/event {:msg (format "processing batch of %d updates" (count ids))
-                                                     ::app "t-fun"
                                                      ::section "LOAD-LOCATIONS"
                                                      ::updates ids})
                                         (let [location-data (location-details (d/db dt-conn) ids)]
