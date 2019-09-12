@@ -52,7 +52,8 @@
         cs-queue->lambda (lambda/event-source-mapping {::lambda/event-source-arn (c/xref (keyword cloudsearch-queue-name)
                                                                                          :arn)
                                                        ::lambda/function-name locations-lambda-name
-                                                       ::lambda/batch-size 1})
+                                                       ::lambda/batch-size 1
+                                                       ::lambda/enabled true})
         queue-lambda-perms (lambda/permission {::lambda/action "lambda:InvokeFunction"
                                                ::lambda/function-name queue-lambda-name
                                                ::lambda/principal "events.amazonaws.com"})]
