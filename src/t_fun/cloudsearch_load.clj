@@ -269,35 +269,40 @@
 
 (defn queue-updates
   [{:keys [input]}]
-  (let [options (try (edn/read-string input) (catch Exception e {}))
-        _ (cast/event {:msg "options"
-                       ::app "t-fun"
-                       ::options options
-                       ::section "QUEUE-UPDATES"})
-        dt-conn (-> (datomic-config @core/stage)
-                    d/client
-                    (d/connect {:db-name "rk"}))
-        {e :db/id last-tx :rk.param/int-value
-         :or {last-tx 0}
-         :as r} (ffirst (d/q '[:find (pull ?e [:db/id :rk.param/int-value])
-                               :in $ ?name
-                               :where [?e :rk.param/name ?name]]
-                             (d/db dt-conn)
-                             tx-param-name))
-        _ (cast/event {:msg "last-tx" ::e e ::last-tx last-tx ::r r
-                       ::app "t-fun"})
-        {:keys [max-t sent deleted]
-         :or {sent 0 deleted 0}} (walk-transactions dt-conn
-                                                    (or (:start-tx options) (inc last-tx))
-                                                    (or (:timeout options) 120000))]
-    (d/transact dt-conn
-                {:tx-data [{:db/id "param"
-                            :rk.param/name tx-param-name
-                            :rk.param/int-value max-t}]})
-    (let [msg (format "Read through transaction %d. Sent %d updates, %d deletes." max-t sent deleted)]
-      (cast/event {:msg msg ::section "QUEUE-UPDATES"
-                   ::app "t-fun"})
-      msg)))
+  (try
+    (let [options (try (edn/read-string input) (catch Exception e {}))
+          _ (cast/event {:msg "options"
+                         ::app "t-fun"
+                         ::options options
+                         ::section "QUEUE-UPDATES"})
+          dt-conn (-> (datomic-config @core/stage)
+                      d/client
+                      (d/connect {:db-name "rk"}))
+          {e :db/id last-tx :rk.param/int-value
+           :or {last-tx 0}
+           :as r} (ffirst (d/q '[:find (pull ?e [:db/id :rk.param/int-value])
+                                 :in $ ?name
+                                 :where [?e :rk.param/name ?name]]
+                               (d/db dt-conn)
+                               tx-param-name))
+          _ (cast/event {:msg "last-tx" ::e e ::last-tx last-tx ::r r
+                         ::app "t-fun"})
+          {:keys [max-t sent deleted]
+           :or {sent 0 deleted 0}} (walk-transactions dt-conn
+                                                      (or (:start-tx options) (inc last-tx))
+                                                      (or (:timeout options) 120000))]
+      (d/transact dt-conn
+                  {:tx-data [{:db/id "param"
+                              :rk.param/name tx-param-name
+                              :rk.param/int-value max-t}]})
+      (let [msg (format "Read through transaction %d. Sent %d updates, %d deletes." max-t sent deleted)]
+        (cast/event {:msg msg ::section "QUEUE-UPDATES"
+                     ::app "t-fun"})
+        msg))
+    (catch Exception e
+      (cast/alert {:msg "Exception running queue-updates"
+                   ::exception e})
+      (throw e))))
 
 (defn upload-docs
   [client rows]
@@ -355,56 +360,44 @@
 
 (defn load-locations-to-cloudsearch
   [{:keys [input]}]
-  (let [config (datomic-config @core/stage)
-        dt-conn (-> config
-                    d/client
-                    (d/connect {:db-name "rk"}))
-        records (-> input
-                    (json/parse-string true)
-                    :Records)
-        doc-client @locations-doc-client]
-    (pr-str
-     (sequence (map (fn [record]
-                      (let [{:keys [op ids] :as request} (-> record :body edn/read-string)]
-                        (case op
-                          :delete (do (cast/event {:msg (format "processing batch of %d deletes" (count ids))
-                                                   ::app "t-fun"
-                                                   ::section "LOAD-LOCATIONS"
-                                                   ::deletes ids})
-                                      (try
+  (try
+    (let [config (datomic-config @core/stage)
+          dt-conn (-> config
+                      d/client
+                      (d/connect {:db-name "rk"}))
+          records (-> input
+                      (json/parse-string true)
+                      :Records)
+          doc-client @locations-doc-client]
+      (pr-str
+       (sequence (map (fn [record]
+                        (let [{:keys [op ids] :as request} (-> record :body edn/read-string)]
+                          (case op
+                            :delete (do (cast/event {:msg (format "processing batch of %d deletes" (count ids))
+                                                     ::app "t-fun"
+                                                     ::section "LOAD-LOCATIONS"
+                                                     ::deletes ids})
                                         (upload-docs doc-client
                                                      (sequence (comp (mapcat #(vector % (str % "-region_code")))
                                                                      (map #(hash-map :type "delete" :id %)))
                                                                ids))
-                                        (catch Exception e
-                                          (cast/alert {:msg "Exception handling delete"
-                                                       ::exception e
-                                                       ::record record})
-                                          (throw e))))
-                          :update (do (cast/event {:msg (format "processing batch of %d updates" (count ids))
-                                                   ::app "t-fun"
-                                                   ::section "LOAD-LOCATIONS"
-                                                   ::updates ids})
-                                      (try (let [location-data (location-details (d/db dt-conn) ids)]
-                                             (->> location-data
-                                                  (into {}
-                                                        (comp
-                                                         (mapcat #(cond-> [%]
-                                                                    (get-in % [:rk.place/region :rk.region/code]) (conj (make-alt-location %))))
-                                                         (map (juxt #(or (:alt-id %) (:rk.place/id %)) datomic->aws))))
-                                                  vals
-                                                  (upload-docs doc-client)))
-                                           (catch Exception e
-                                             (cast/alert {:msg "Exception handling update"
-                                                          ::exception e
-                                                          ::record record})
-                                             (throw e))))
-                          (do (cast/alert {:msg "unknown operation"
-                                           ::app "t-fun"
-                                           ::request request
-                                           ::input input
-                                           ::section "LOAD-LOCATIONS"                                           })
-                              (throw (ex-info (format "Unknown operation - %s" op) {:request request})))
-                          ))))
-               records))
-    ))
+                                        )
+                            :update (do (cast/event {:msg (format "processing batch of %d updates" (count ids))
+                                                     ::app "t-fun"
+                                                     ::section "LOAD-LOCATIONS"
+                                                     ::updates ids})
+                                        (let [location-data (location-details (d/db dt-conn) ids)]
+                                          (->> location-data
+                                               (into {}
+                                                     (comp
+                                                      (mapcat #(cond-> [%]
+                                                                 (get-in % [:rk.place/region :rk.region/code]) (conj (make-alt-location %))))
+                                                      (map (juxt #(or (:alt-id %) (:rk.place/id %)) datomic->aws))))
+                                               vals
+                                               (upload-docs doc-client))))
+                            (throw (ex-info (format "Unknown operation - %s" op) {:request request}))))))
+                 records)))
+    (catch Exception e
+      (cast/alert {:msg "Exception in load-locations-to-cloudsearch"
+                   ::exception e})
+      (throw e))))
