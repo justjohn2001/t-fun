@@ -379,7 +379,8 @@
                                         (catch Exception e
                                           (cast/alert {:msg "Exception handling delete"
                                                        ::exception e
-                                                       ::record record}))))
+                                                       ::record record})
+                                          (throw e))))
                           :update (do (cast/event {:msg (format "processing batch of %d updates" (count ids))
                                                    ::app "t-fun"
                                                    ::section "LOAD-LOCATIONS"
@@ -396,7 +397,8 @@
                                            (catch Exception e
                                              (cast/alert {:msg "Exception handling update"
                                                           ::exception e
-                                                          ::record record}))))
+                                                          ::record record})
+                                             (throw e))))
                           (do (cast/alert {:msg "unknown operation"
                                            ::app "t-fun"
                                            ::request request
