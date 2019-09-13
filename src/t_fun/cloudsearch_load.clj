@@ -88,8 +88,8 @@
     {:type "add"
      :id (string/replace (or alt-id id) " " "-")
      :fields (cond-> {:tid id
-                      :country_code country-code
-                      :country_name country-name
+                      :country_code (or country-code "")
+                      :country_name (or country-name "")
                       :full_name display-name
                       :full_name_starts_with (-> display-name
                                                  make-starts-with
