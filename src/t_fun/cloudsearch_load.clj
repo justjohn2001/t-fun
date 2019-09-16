@@ -88,8 +88,6 @@
     {:type "add"
      :id (string/replace (or alt-id id) " " "-")
      :fields (cond-> {:tid id
-                      :country_code (or country-code "")
-                      :country_name (or country-name "")
                       :full_name display-name
                       :full_name_starts_with (-> display-name
                                                  make-starts-with
@@ -106,6 +104,8 @@
                       :place_type type
                       :is_primary (nil? alt-id)}
                airport-code (assoc :airport_code airport-code)
+               country-code (assoc :country_code country-code)
+               country-name (assoc :country_name country-name)
                region-code (assoc :region_code region-code)
                region-name (assoc :region region-name))}))
 
