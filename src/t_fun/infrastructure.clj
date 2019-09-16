@@ -23,6 +23,23 @@
 
 (def default-arn-role (format "arn:aws:iam::%s:role/CfAdministratorAccess" account-id))
 
+(def t-fun-query-group-policies
+  #_(iam/policy {::iam/policy-name "RoomkeyTfunSQSAccess"
+                 ::iam/policy-document {::iam/statement [{::iam/effect "Allow"
+                                                          ::iam/action ["sqs:ReceiveMessage" "sqs:GetQueueAttributes"
+                                                                        "sqs:DeleteMessage" "sqs:DeleteMessageBatch"
+                                                                        "sqs:SendMessage" "sqs:SendMessageBatch"
+                                                                        "cloudsearch:document" "cloudsearch:search" "cloudsearch:DescribeDomains"]
+                                                          ::iam/resource ["arn:aws:sqs:*:*:t-fun-*"
+                                                                          interval (* 10 1000)                              ;; check every 10 seconds
+                                                                          "arn:aws:cloudsearch:*:*:domain/locations-*"]}]}})
+  [{"PolicyName" "RoomkeyTFunSQSAccess"
+    "PolicyDocument" {"Version" "2012-10-17"
+                      "Statement" [{"Effect" "Allow"
+                                    "Action" ["sqs:ReceiveMessage" "sqs:GetQueueAttributes"
+                                              "sqs:DeleteMessage" "sqs:DeleteMessageBatch"]
+                                    "Resource" ["arn:aws:sqs:*:*:t-fun-*"]}]}}])
+
 (def make-stack-name
   (memoize (fn make-stack-name* []
              (let [{:keys [app-name deployment-group]} (ion/get-app-info)]
@@ -143,6 +160,59 @@
     (catch Exception e
       e)))
 
+(defn adjust-template
+  [template]
+  (-> template
+      json/decode
+      (update-in ["Resources" "DatomicLambdaRole" "Properties" "Policies"]
+                 (fn [policies]
+                   (into []
+                         (filter #(not (re-find #"RoomkeyTFun.*"
+                                                (get-in % ["PolicyName"])))
+                                 policies)))) ;; remove any existing Tfun policies
+      (update-in ["Resources" "DatomicLambdaRole" "Properties" "Policies"]
+                 concat
+                 t-fun-query-group-policies) ;; add the current policies
+      json/encode))
+
+(defn adjust-deployment-group
+  [cf-client deployment-group]
+  (cast/event {:msg "INFRASTRUCTURE - adjust-deployment-group"})
+  (let [app-name (:app-name (ion/get-app-info))
+        response (cf-describe cf-client deployment-group)
+        {:keys [ErrorResponse TemplateBody] :as template} (aws/invoke cf-client
+                                                                      {:op :GetTemplate
+                                                                       :request {:StackName deployment-group}})]
+    (cond (:ErrorResponse response) response
+          ErrorResponse template
+          :else (let [{:keys [Parameters Capabilities]} (get-in response [:Stacks 0])
+                      adjusted-template (adjust-template TemplateBody)
+                      s3-client (aws/client {:api :s3})
+                      bucket-name "rk-persist"
+                      key-name (format "%s/template/%s-%08x"
+                                       app-name
+                                       deployment-group
+                                       (hash adjusted-template))]
+                  (when (not= (json/encode TemplateBody) adjusted-template)
+                    (cast/event {:msg "INFRASTRUCTURE - Updating query group stack" ::bucket bucket-name ::key-name key-name})
+                    (aws/invoke s3-client
+                                {:op :PutObject
+                                 :request {:Bucket bucket-name
+                                           :Key key-name
+                                           :Body adjusted-template}})
+                    (let [update-result (aws/invoke cf-client
+                                                    {:op :UpdateStack
+                                                     :request {:StackName deployment-group
+                                                               :TemplateURL (format "https://s3.amazonaws.com/%s/%s" bucket-name key-name)
+                                                               :Parameters Parameters
+                                                               :Capabilities Capabilities}})]
+                      (when (and (:ErrorResponse update-result)
+                                 (not= (get-in update-result [:ErrorResponse :Error :Message])
+                                       "No updates are to be performed."))
+                        (cast/alert {:msg (format "INFRASTRUCTURE - error updating %s" deployment-group)
+                                     ::update-result update-result})
+                        update-result)))))))
+
 (def stack-error
   (future (let [deployment-group (:deployment-group (ion/get-app-info))]
             (if-not deployment-group
@@ -152,7 +222,8 @@
               (let [cf-client (aws/client {:api :cloudformation})
                     _ (cast/event {:msg "Stack updates starting"
                                    ::deployment-group deployment-group})
-                    result (build-stack cf-client deployment-group)]
+                    result (some #(% cf-client deployment-group)
+                                 [wait adjust-deployment-group wait build-stack])]
                 (if result
                   (cast/alert {:msg "Stack build result"
                                ::deployment-group deployment-group
