@@ -54,13 +54,15 @@
    :rk.region/code :region})
 
 (defn expand-n-gram
-  ([s] (expand-n-gram (sorted-set) [(first s)] (rest s)))
-  ([result prefix suffix]
-   (if (seq suffix)
-     (recur (conj result (apply str prefix))
-            (conj prefix (first suffix))
-            (rest suffix))
-     (conj result (apply str prefix)))))
+  ([s]
+   (loop [result (sorted-set)
+          prefix [(first s)]
+          suffix (rest s)]
+     (if (seq suffix)
+       (recur (conj result (apply str prefix))
+              (conj prefix (first suffix))
+              (rest suffix))
+       (conj result (apply str prefix))))))
 
 ;;; A version of this function also exists in apij.models.location to build queries
 ;;; against the fields. Please keep both in sync.
@@ -109,16 +111,16 @@
                region-code (assoc :region_code region-code)
                region-name (assoc :region region-name))}))
 
-(defn- make-alt-location
+(defn make-alt-location
   [{{:keys [rk.region/code rk.region/name]} :rk.place/region :as loc}]
   (-> loc
       (assoc :alt-id (str (:rk.place/id loc) "-region_code"))
       (update :rk.place/display-name
               #(string/replace %
-                               (format ", %s, " (:name loc))
-                               (format ", %s, " (:code loc))))))
+                               (format ", %s, " name)
+                               (format ", %s, " code)))))
 
-(defn get-attribute-ids
+(defn- get-attribute-ids
   [dt-conn]
   (map first
        (d/q '[:find (pull ?e [:db/id :db/ident])
@@ -129,8 +131,6 @@
 
 (defn datomic-transactions
   [dt-conn tx-id]
-  (cast/dev {:msg "Loading tx"
-             ::tx-id tx-id})
   (let [tx (d/tx-range dt-conn
                        {:start tx-id
                         :end (inc tx-id)})]
@@ -157,8 +157,8 @@
     (when-let [s (seq coll)]
       (let [f (first s)]
         (if (pred f)
-          (cons f (take-while pred (rest s)))
-          f))))))
+          (cons f (take-while* pred (rest s)))
+          [f]))))))
 
 (defn find-entities
   [attr-to-find datoms]
