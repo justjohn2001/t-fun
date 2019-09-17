@@ -102,7 +102,7 @@
                       :latlng (format "%.6f,%.6f" latitude longitude)
                       :name name
                       :place_type type
-                      :is_primary (nil? alt-id)}
+                      :is_primary (str (nil? alt-id))}
                airport-code (assoc :airport_code airport-code)
                country-code (assoc :country_code country-code)
                country-name (assoc :country_name country-name)
