@@ -120,7 +120,7 @@
                                (format ", %s, " name)
                                (format ", %s, " code)))))
 
-(defn- get-attribute-ids
+(defn get-attribute-ids
   [dt-conn]
   (map first
        (d/q '[:find (pull ?e [:db/id :db/ident])
@@ -160,7 +160,7 @@
           (cons f (take-while* pred (rest s)))
           [f]))))))
 
-(defn find-entities
+(defn- find-entities
   [attr-to-find datoms]
   (let [wanted-entities (filter #(contains? attr-to-find (:a %)) datoms)]
     (if (seq wanted-entities)
@@ -168,7 +168,7 @@
       [{}])))
 
 (defn expand-countries-and-regions
-  [dt-conn [[entity-type _ tx] :as l]]
+  [dt-conn [[entity-type _ tx] :as l]]             ;; this assumes that all the items in the list have the same entity-type and tx value
   (let [e-t (mapv (juxt second #(nth % 3)) l)]
     (case entity-type
       :place e-t
@@ -183,7 +183,7 @@
                    (-> dt-conn d/db (d/as-of tx))
                    e-t))))
 
-(defn sqs-send
+(defn- sqs-send
   [sqs-client sqs-url op s]
   (cast/event {:msg "Sending batch to sqs"
                ::sqs-url sqs-url})
@@ -228,39 +228,44 @@
        e (update-in [:pending e] (fnil max 0) t-val)
        t-val (update :max-t max t-val)))))
 
-(defn type-and-tx [e]
+(defn- type-and-tx [e]
   [(first e) (nth e 2)])
+
+(defn get-queue-url
+  [client queue-name]
+  (let [response (aws/invoke client
+                             {:op :GetQueueUrl
+                              :request {:QueueName queue-name}})]
+    (when-not (:QueueUrl response)
+      (cast/alert {:msg "Error gett-ing sqs-url"
+                   ::get-queue-url-response response})
+      (throw (ex-info "Unable to get queue url" {::queue-name queue-name
+                                                 ::response response})))
+    (:QueueUrl response)))
 
 (defn walk-transactions
   [dt-conn start-tx timeout]
   (let [sqs-client (aws/client {:api :sqs})
         queue-name (inf/make-cloudsearch-load-queue-name)
-        {sqs-url :QueueUrl :as sqs-url-response} (aws/invoke sqs-client
-                                                             {:op :GetQueueUrl
-                                                              :request {:QueueName queue-name}})
+        sqs-url (get-queue-url sqs-client queue-name)
         stop-time (+ (System/currentTimeMillis) timeout)
         attribute-ids (get-attribute-ids dt-conn)
         id->ident (into {} (map (juxt :db/id :db/ident)
                                 attribute-ids))
         location-attributes (into #{} (map :db/id attribute-ids))]
-    (if (nil? sqs-url)
-      (cast/alert {:msg "Error getting sqs-url"
-                   ::queue-name queue-name
-                   ::response sqs-url-response
-                   ::section "walk-transaction"})
-      (transduce (comp (take-while* (fn [_] (< (System/currentTimeMillis) stop-time)))
-                       cat
-                       (map (juxt :t #(find-entities location-attributes (:data %))))
-                       (mapcat (fn [[t-id d]]
-                                 (sort-by type-and-tx
-                                          (map (fn [{:keys [e a tx]}]
-                                                 (vector (-> a id->ident attribute->entity)
-                                                         e tx t-id))
-                                               d))))
-                       (partition-by type-and-tx)
-                       (mapcat (partial expand-countries-and-regions dt-conn)))
-                 (entity-reducer dt-conn sqs-client sqs-url start-tx)
-                 (datomic-transactions dt-conn start-tx)))))
+    (transduce (comp (take-while* (fn [_] (< (System/currentTimeMillis) stop-time)))
+                     cat
+                     (map (juxt :t #(find-entities location-attributes (:data %))))
+                     (mapcat (fn [[t-id d]]
+                               (sort-by type-and-tx
+                                        (map (fn [{:keys [e a tx]}]
+                                               (vector (-> a id->ident attribute->entity)
+                                                       e tx t-id))
+                                             d))))
+                     (partition-by type-and-tx)
+                     (mapcat (partial expand-countries-and-regions dt-conn)))
+               (entity-reducer dt-conn sqs-client sqs-url start-tx)
+               (datomic-transactions dt-conn start-tx))))
 
 (def tx-param-name "Last tx-id queued to cloudsearch-locations")
 
