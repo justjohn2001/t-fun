@@ -226,7 +226,7 @@
     ([acc [e t-val]]
      (cond-> acc
        e (update-in [:pending e] (fnil max 0) t-val)
-       t-val (update :max-t max t-val)))))
+       t-val (update :max-t (fnil max 0) t-val)))))
 
 (defn- type-and-tx [e]
   [(first e) (nth e 2)])
@@ -244,15 +244,14 @@
     (:QueueUrl response)))
 
 (defn walk-transactions
-  [dt-conn start-tx timeout]
-  (let [sqs-client (aws/client {:api :sqs})
-        queue-name (inf/make-cloudsearch-load-queue-name)
+  [dt-conn sqs-client start-tx timeout]
+  (let [queue-name (inf/make-cloudsearch-load-queue-name)
         sqs-url (get-queue-url sqs-client queue-name)
         stop-time (+ (System/currentTimeMillis) timeout)
         attribute-ids (get-attribute-ids dt-conn)
         id->ident (into {} (map (juxt :db/id :db/ident)
                                 attribute-ids))
-        location-attributes (into #{} (map :db/id attribute-ids))]
+        location-attributes (into #{} (keys id->ident))]
     (transduce (comp (take-while* (fn [_] (< (System/currentTimeMillis) stop-time)))
                      cat
                      (map (juxt :t #(find-entities location-attributes (:data %))))
@@ -269,6 +268,21 @@
 
 (def tx-param-name "Last tx-id queued to cloudsearch-locations")
 
+(defn get-tx-param
+  [dt-conn]
+  (ffirst (d/q '[:find (pull ?e [:db/id :rk.param/int-value])
+                 :in $ ?name
+                 :where [?e :rk.param/name ?name]]
+               (d/db dt-conn)
+               tx-param-name)))
+
+(defn set-tx-param
+  [dt-conn max-t]
+  (d/transact dt-conn
+              {:tx-data [{:db/id "param"
+                          :rk.param/name tx-param-name
+                          :rk.param/int-value max-t}]}))
+
 (defn queue-updates
   [{:keys [input]}]
   (try
@@ -276,24 +290,17 @@
           dt-conn (-> (datomic-config @core/stage)
                       d/client
                       (d/connect {:db-name "rk"}))
+          sqs-client (aws/client {:api :sqs})
           {e :db/id last-tx :rk.param/int-value
            :or {last-tx 0}
-           :as r} (ffirst (d/q '[:find (pull ?e [:db/id :rk.param/int-value])
-                                 :in $ ?name
-                                 :where [?e :rk.param/name ?name]]
-                               (d/db dt-conn)
-                               tx-param-name))
+           :as r} (get-tx-param dt-conn)
           {:keys [max-t sent deleted]
-           :or {sent 0 deleted 0}} (walk-transactions dt-conn
+           :or {sent 0 deleted 0}} (walk-transactions dt-conn sqs-client
                                                       (or (:start-tx options) (inc last-tx))
                                                       (or (:timeout options) 120000))]
-      (d/transact dt-conn
-                  {:tx-data [{:db/id "param"
-                              :rk.param/name tx-param-name
-                              :rk.param/int-value max-t}]})
+      (set-tx-param dt-conn max-t)
       (let [msg (format "Read through transaction %d. Sent %d updates, %d deletes." max-t sent deleted)]
         (cast/event {:msg msg
-                     ::section "QUEUE-UPDATES"
                      ::app "t-fun"})
         msg))
     (catch Exception e
@@ -304,8 +311,8 @@
 (defn upload-docs
   [client rows]
   (when (seq rows)
-    (cast/event {:msg (format "Uploading to cloudsearch batch of %d" (count rows))
-                 ::section "LOAD-LOCATIONS"})
+    (cast/event {:msg "Uploading to cloudsearch batch"
+                 ::count (count rows)})
     (let [docs (-> rows
                    (json/generate-string {:escape-non-ascii true})
                    .getBytes)
@@ -346,7 +353,6 @@
                domain-status-list (aws/invoke cs-client {:op :DescribeDomains :request {:DomainNames [domain-name]}})
                endpoint (get-in domain-status-list [:DomainStatusList 0 :DocService :Endpoint])]
            (cast/event {:msg "cloudsearch client details"
-                        ::section "LOAD-LOCATIONS"
                         ::details {:domain-name domain-name
                                    :domain-status-list domain-status-list
                                    :endpoint endpoint}})
@@ -364,35 +370,31 @@
                       (json/parse-string true)
                       :Records)
           doc-client @locations-doc-client
-          result (pr-str
-                  (sequence (map (fn [record]
-                                   (let [{:keys [op ids] :as request} (-> record :body edn/read-string)]
-                                     (case op
-                                       :delete (do (cast/event {:msg (format "processing batch of %d deletes" (count ids))
-                                                                ::section "LOAD-LOCATIONS"
-                                                                ::deletes ids})
-                                                   (upload-docs doc-client
-                                                                (sequence (comp (mapcat #(vector % (str % "-region_code")))
-                                                                                (map #(hash-map :type "delete" :id %)))
-                                                                          ids)))
-                                       :update (do (cast/event {:msg (format "processing batch of %d updates" (count ids))
-                                                                ::section "LOAD-LOCATIONS"
-                                                                ::updates ids})
-                                                   (let [location-data (location-details (d/db dt-conn) ids)]
-                                                     (->> location-data
-                                                          (into {}
-                                                                (comp
-                                                                 (mapcat #(cond-> [%]
-                                                                            (get-in % [:rk.place/region :rk.region/code]) (conj (make-alt-location %))))
-                                                                 (map (juxt #(or (:alt-id %) (:rk.place/id %)) datomic->aws))))
-                                                          vals
-                                                          (upload-docs doc-client))))
-                                       (throw (ex-info (format "Unknown operation - %s" op) {:request request}))))))
-                            records))]
+          result (sequence (map (fn [record]
+                                  (let [{:keys [op ids] :as request} (-> record :body edn/read-string)]
+                                    (case op
+                                      :delete (do (cast/event {:msg (format "processing batch of %d deletes" (count ids))
+                                                               ::deletes ids})
+                                                  (upload-docs doc-client
+                                                               (sequence (comp (mapcat #(vector % (str % "-region_code")))
+                                                                               (map #(hash-map :type "delete" :id %)))
+                                                                         ids)))
+                                      :update (do (cast/event {:msg (format "processing batch of %d updates" (count ids))
+                                                               ::updates ids})
+                                                  (let [location-data (location-details (d/db dt-conn) ids)]
+                                                    (->> location-data
+                                                         (into {}
+                                                               (comp
+                                                                (mapcat #(cond-> [%]
+                                                                           (get-in % [:rk.place/region :rk.region/code]) (conj (make-alt-location %))))
+                                                                (map (juxt #(or (:alt-id %) (:rk.place/id %)) datomic->aws))))
+                                                         vals
+                                                         (upload-docs doc-client))))
+                                      (throw (ex-info (format "Unknown operation - %s" op) {:request request}))))))
+                           records)]
       (cast/event {:msg "load-location-to-cloudsearch done"
-                   ::section "LOAD-LOCATIONS"
                    ::result result})
-      result)
+      (pr-str result))
     (catch Exception e
       (cast/alert {:msg "Exception in load-locations-to-cloudsearch"
                    ::exception e})
