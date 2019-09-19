@@ -1,0 +1,8 @@
+#kaocha/v1
+{:tests [{:id          :unit
+          :type :kaocha.type/midje
+          :test-paths  ["test/t_fun/unit"]
+          :ns-patterns [".*"]}]}
+;; :reporter kaocha.report.progress/progress
+;; :plugins [:profiling :notifier]
+}

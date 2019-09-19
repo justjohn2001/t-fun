@@ -31,7 +31,8 @@
                      :extra-deps {nrepl/nrepl {:mvn/version "0.6.0"}
                                   refactor-nrepl {:mvn/version "2.4.0"}
                                   cider/cider-nrepl {:mvn/version "0.21.1"}}}
-             :midje {:extra-paths ["test"]
+             :midje {:main-opts ["-m" "kaocha.runner"]
+                     :extra-paths ["test"]
                      :extra-deps {lambdaisland/kaocha {:mvn/version "0.0-541"}
                                   lambdaisland/kaocha-midje {:mvn/version "0.0-5"}
                                   midje {:mvn/version "1.9.9"}}}}}
