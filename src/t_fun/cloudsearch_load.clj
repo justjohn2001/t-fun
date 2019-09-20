@@ -19,12 +19,11 @@
 (def region "us-east-1")
 
 (defn datomic-config
-  [stage]
-  (let [stage-str (name stage)]
-    {:server-type :ion
-     :region region
-     :system (format "datomic-cloud-%s" stage-str)
-     :endpoint (format "http://dc-%s-compute-main.c0pt3r.local:8182/" stage-str)}))
+  [stage-str]
+  {:server-type :ion
+   :region region
+   :system (format "datomic-cloud-%s" stage-str)
+   :endpoint (format "http://dc-%s-compute-main.c0pt3r.local:8182/" stage-str)})
 
 (defn make-resource-name
   [s]
@@ -349,7 +348,7 @@
 
 (def locations-doc-client
   (delay (let [cs-client (aws/client {:api :cloudsearch})
-               domain-name (format "locations-%s" (name @core/stage))
+               domain-name (format "locations-%s" @core/stage)
                domain-status-list (aws/invoke cs-client {:op :DescribeDomains :request {:DomainNames [domain-name]}})
                endpoint (get-in domain-status-list [:DomainStatusList 0 :DocService :Endpoint])]
            (cast/event {:msg "cloudsearch client details"

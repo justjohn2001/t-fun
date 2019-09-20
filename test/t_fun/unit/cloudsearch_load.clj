@@ -1,8 +1,7 @@
 (ns t-fun.unit.cloudsearch-load
   (:require [t-fun.cloudsearch-load :refer :all :as cs-load]
             [midje.sweet :as t :refer [=> contains anything just]]
-            [datomic.ion :as ion]
-            [datomic.client.api :as d]))
+            [datomic.ion :as ion]))
 
 (t/fact "datomic-config"
         (datomic-config :test) => map?)

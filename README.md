@@ -7,3 +7,8 @@ and follow the instructions to deploy to a query group.
 
 ## Running Tests
 `clj -A:midje`
+
+## Running in REPL
+If you need the infrastructure to work, run the REPL with the following environmental variable substituting in the correct deployment group:
+
+`DATOMIC_APP_INFO_MAP='{:app-name "t-fun" :deployment-group "<deployment-group>"}''`

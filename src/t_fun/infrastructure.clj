@@ -18,27 +18,20 @@
    [t-fun.core :as core])
   (:import java.util.UUID))
 
+(defn- interval [] 1000) ; override for testing
+
 (def account-id "304062982811")
 (def region "us-east-1")
 
 (def default-arn-role (format "arn:aws:iam::%s:role/CfAdministratorAccess" account-id))
 
 (def t-fun-query-group-policies
-  #_(iam/policy {::iam/policy-name "RoomkeyTfunSQSAccess"
-                 ::iam/policy-document {::iam/statement [{::iam/effect "Allow"
-                                                          ::iam/action ["sqs:ReceiveMessage" "sqs:GetQueueAttributes"
-                                                                        "sqs:DeleteMessage" "sqs:DeleteMessageBatch"
-                                                                        "sqs:SendMessage" "sqs:SendMessageBatch"
-                                                                        "cloudsearch:document" "cloudsearch:search" "cloudsearch:DescribeDomains"]
-                                                          ::iam/resource ["arn:aws:sqs:*:*:t-fun-*"
-                                                                          interval (* 10 1000)                              ;; check every 10 seconds
-                                                                          "arn:aws:cloudsearch:*:*:domain/locations-*"]}]}})
-  [{"PolicyName" "RoomkeyTFunSQSAccess"
-    "PolicyDocument" {"Version" "2012-10-17"
-                      "Statement" [{"Effect" "Allow"
-                                    "Action" ["sqs:ReceiveMessage" "sqs:GetQueueAttributes"
-                                              "sqs:DeleteMessage" "sqs:DeleteMessageBatch"]
-                                    "Resource" ["arn:aws:sqs:*:*:t-fun-*"]}]}}])
+  [{:PolicyName "RoomkeyTFunSQSAccess"
+    :PolicyDocument {:Version "2012-10-17"
+                     :Statement [{:Effect "Allow"
+                                  :Action ["sqs:ReceiveMessage" "sqs:GetQueueAttributes"
+                                           "sqs:DeleteMessage" "sqs:DeleteMessageBatch"]
+                                  :Resource ["arn:aws:sqs:*:*:t-fun-*"]}]}}])
 
 (def make-stack-name
   (memoize (fn make-stack-name* []
@@ -46,7 +39,7 @@
                (format "%s-%s-infrastructure" app-name deployment-group)))))
 
 (def make-cloudsearch-load-queue-name
-  (memoize (fn []
+  (memoize (fn make-cloudsearch-load-queue-name* []
              (format "%s-%s" (make-stack-name) "cloudsearch-load-queue"))))
 
 (defn five-minute-rule
@@ -133,7 +126,7 @@
                ::stack stack-name})
   (let [duration (* 10 60 1000)                           ;; 10 minutes
         end-time (+ (System/currentTimeMillis) duration)]
-    (loop [interval 1000]
+    (loop [interval (interval)]
       (let [stack (cf-describe cf-client stack-name)
             status (get-in stack [:Stacks 0 :StackStatus])]
         (cond
@@ -142,7 +135,7 @@
           (#{"ROLLBACK_COMPLETE" "UPDATE_ROLLBACK_COMPLETE"} status) :failed
           (> (System/currentTimeMillis) end-time) (format "Timeout waiting. Status %s" status)
           :else (do (Thread/sleep interval)
-                    (recur (if (< interval 10000) (* 2 interval) interval))))))))
+                    (recur (min (* 2 interval) 30000))))))))
 
 (defn build-stack
   [cf-client deployment-group]
@@ -161,32 +154,32 @@
       e)))
 
 (defn adjust-template
-  [template]
+  [template new-policies]
   (-> template
       json/decode
       (update-in ["Resources" "DatomicLambdaRole" "Properties" "Policies"]
                  (fn [policies]
                    (into []
                          (filter #(not (re-find #"RoomkeyTFun.*"
-                                                (get-in % ["PolicyName"])))
+                                                (get-in % ["PolicyName"] "")))
                                  policies)))) ;; remove any existing Tfun policies
       (update-in ["Resources" "DatomicLambdaRole" "Properties" "Policies"]
                  concat
-                 t-fun-query-group-policies) ;; add the current policies
+                 new-policies)
       json/encode))
 
 (defn adjust-deployment-group
   [cf-client deployment-group]
-  (cast/event {:msg "INFRASTRUCTURE - adjust-deployment-group"})
+  (cast/event {:msg "adjust-deployment-group" ::group deployment-group})
   (let [app-name (:app-name (ion/get-app-info))
-        response (cf-describe cf-client deployment-group)
+        describe-response (cf-describe cf-client deployment-group)
         {:keys [ErrorResponse TemplateBody] :as template} (aws/invoke cf-client
                                                                       {:op :GetTemplate
                                                                        :request {:StackName deployment-group}})]
-    (cond (:ErrorResponse response) response
+    (cond (:ErrorResponse describe-response) describe-response
           ErrorResponse template
-          :else (let [{:keys [Parameters Capabilities]} (get-in response [:Stacks 0])
-                      adjusted-template (adjust-template TemplateBody)
+          :else (let [{:keys [Parameters Capabilities]} (get-in describe-response [:Stacks 0])
+                      adjusted-template (adjust-template TemplateBody t-fun-query-group-policies)
                       s3-client (aws/client {:api :s3})
                       bucket-name "rk-persist"
                       key-name (format "%s/template/%s-%08x"
@@ -214,31 +207,30 @@
                         update-result)))))))
 
 (def stack-error
-  (future (let [deployment-group (:deployment-group (ion/get-app-info))]
-            (if-not deployment-group
-              (do (cast/alert {:msg "Unable to determine deployment group"
-                               ::app-info (ion/get-app-info)})
-                  "Unable to determine deployment group")
-              (let [cf-client (aws/client {:api :cloudformation})
-                    _ (cast/event {:msg "Stack updates starting"
-                                   ::deployment-group deployment-group})
-                    result (some #(% cf-client deployment-group)
-                                 [wait adjust-deployment-group wait build-stack])]
-                (if result
-                  (cast/alert {:msg "Stack build result"
-                               ::deployment-group deployment-group
-                               ::result result})
-                  (cast/event {:msg "Stack created/updated successfully"
-                               ::deployment-group deployment-group}))
-                result)))))
+  (future (if-let [deployment-group (:deployment-group (ion/get-app-info))]
+            (let [cf-client (aws/client {:api :cloudformation})
+                  _ (cast/event {:msg "Stack updates starting"
+                                 ::deployment-group deployment-group})
+                  result (some #(% cf-client deployment-group)
+                               [wait adjust-deployment-group wait build-stack])]
+              (if result
+                (cast/alert {:msg "Stack build result"
+                             ::deployment-group deployment-group
+                             ::result result})
+                (cast/event {:msg "Stack created/updated successfully"
+                             ::deployment-group deployment-group}))
+              result)
+            (do (cast/alert {:msg "Unable to determine deployment group"
+                             ::app-info (ion/get-app-info)})
+                "Unable to determine deployment group"))))
 
-(defn create-cloudsearch-domain
+(defn- create-cloudsearch-domain
   [cs-client domain-name]
   (cast/event {:msg "Creating domain. This may take 10 minutes."
                ::domain domain-name})
   (aws/invoke cs-client {:op :CreateDomain :request {:DomainName domain-name}}))
 
-(defn create-cloudsearch-index
+(defn- create-cloudsearch-index
   [cs-client domain-name schema]
 
   (doseq [index-field schema]
@@ -264,7 +256,6 @@
   (doseq [{field-name :IndexFieldName} fields]
     (cast/event {:msg "Deleting field" ::domain domain-name ::field field-name})
     (aws/invoke cs-client {:op :DeleteIndexField :request {:DomainName domain-name :IndexFieldName field-name}}))
-  (aws/invoke cs-client {:op :IndexDocuments})
   (seq fields))
 
 (defn- fix-schema!?
@@ -293,9 +284,10 @@
 (defn build-cloudsearch-domain
   [stage]
   (let [cs-client (aws/client {:api :cloudsearch})
-        domain-name (format "locations-%s" stage)]
+        domain-name (format "locations-%s" stage)
+        sleep-time (interval)]
     (loop []
-      (Thread/sleep 1000)       ; Pause to let previous step settle.
+      (Thread/sleep sleep-time)       ; Pause to let previous step settle.
       (let [domain-status-list (aws/invoke cs-client {:op :DescribeDomains :request {:DomainNames [domain-name]}})
             domain-status (get-in domain-status-list [:DomainStatusList 0])]
         (cond
@@ -307,7 +299,7 @@
                 (pr-str msg)))
 
           (not domain-status)
-          (do (cast/event {:msg "Creating Cloudsearh domain" ::domain-name domain-name})
+          (do (cast/event {:msg "Creating Cloudsearch domain" ::domain-name domain-name})
               (create-cloudsearch-domain cs-client domain-name)
               (recur))
 
@@ -315,7 +307,7 @@
           (do
             (cast/event {:msg "Waiting for Cloudsearch domain to finish processing..."
                          ::domain domain-name})
-            (Thread/sleep 30000)
+            (Thread/sleep (* 30 sleep-time))
             (recur))
 
           (:RequiresIndexDocuments domain-status)
@@ -325,26 +317,24 @@
             (recur))
 
           (fix-schema!? cs-client domain-name)
-          (do (Thread/sleep 10000)
+          (do (Thread/sleep (* 10 sleep-time))
               (recur))
 
           :else nil)))))
 
 (def cs-domain-error
-  (future (let [stage (name @core/stage)]
-            (if-not stage
-              (do (cast/alert {:msg "cs-domain-error unable to determine stage"
-                               ::app-info (ion/get-env)})
-                  "cs-domain-error unable to determine stage")
-              (let [
-                    result (build-cloudsearch-domain stage)]
-                (if result
-                  (cast/alert {:msg "Cloudsearch domain build result"
-                               ::stage stage
-                               ::result result})
-                  (cast/event {:msg "Cloudsearch domain created/updated successfully"
-                               ::stage stage}))
-                result)))))
+  (future (if-let [stage @core/stage]
+            (let [result (build-cloudsearch-domain stage)]
+              (if result
+                (cast/alert {:msg "Cloudsearch domain build result"
+                             ::stage stage
+                             ::result result})
+                (cast/event {:msg "Cloudsearch domain created/updated successfully"
+                             ::stage stage}))
+              result)
+            (do (cast/alert {:msg "cs-domain-error unable to determine stage"
+                             ::app-info (ion/get-env)})
+                "cs-domain-error unable to determine stage"))))
 
 (defn stack-state
   [{:keys [input] :as params}]
