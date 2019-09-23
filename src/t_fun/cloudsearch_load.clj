@@ -286,7 +286,7 @@
   [{:keys [input]}]
   (try
     (let [options (try (edn/read-string input) (catch Exception e {}))
-          dt-conn (-> (datomic-config @core/stage)
+          dt-conn (-> (datomic-config (name @core/stage))
                       d/client
                       (d/connect {:db-name "rk"}))
           sqs-client (aws/client {:api :sqs})
@@ -348,7 +348,7 @@
 
 (def locations-doc-client
   (delay (let [cs-client (aws/client {:api :cloudsearch})
-               domain-name (format "locations-%s" @core/stage)
+               domain-name (format "locations-%s" (name @core/stage))
                domain-status-list (aws/invoke cs-client {:op :DescribeDomains :request {:DomainNames [domain-name]}})
                endpoint (get-in domain-status-list [:DomainStatusList 0 :DocService :Endpoint])]
            (cast/event {:msg "cloudsearch client details"
@@ -361,7 +361,7 @@
 (defn load-locations-to-cloudsearch
   [{:keys [input]}]
   (try
-    (let [config (datomic-config @core/stage)
+    (let [config (datomic-config (name @core/stage))
           dt-conn (-> config
                       d/client
                       (d/connect {:db-name "rk"}))

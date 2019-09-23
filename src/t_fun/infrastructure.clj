@@ -323,7 +323,7 @@
           :else nil)))))
 
 (def cs-domain-error
-  (future (if-let [stage @core/stage]
+  (future (if-let [stage (name @core/stage)]
             (let [result (build-cloudsearch-domain stage)]
               (if result
                 (cast/alert {:msg "Cloudsearch domain build result"
