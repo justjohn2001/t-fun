@@ -3,8 +3,11 @@
             [datomic.ion.cast :as cast]
             [clojure.string :as string]))
 
-(def stage (future (keyword (or (get (System/getenv) "STAGE")
-                                (get (ion/get-env) :env)))))
+(def stage
+  (memoize
+   (fn stage* []
+     (keyword (or (get (System/getenv) "STAGE")
+                  (get (ion/get-env) :env))))))
 
 (defn echo
   [{:keys [input] :as params}]

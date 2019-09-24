@@ -172,7 +172,8 @@
                  (provided (walk-transactions ..conn.. anything anything anything) t/=throws=> (Exception.)
                            (datomic.ion.cast/alert anything) => nil))
 
-         (t/against-background (datomic.client.api/client anything) => ..client..
+         (t/against-background (t-fun.core/stage) => :test
+                               (datomic.client.api/client anything) => ..client..
                                (datomic.client.api/connect ..client.. anything) => ..conn..
                                (get-tx-param ..conn..) => {:rk.param/int-value 10}
                                (walk-transactions ..conn.. anything 11 anything) => {:max-t 11 :sent 1 :deleted 0}
@@ -199,7 +200,8 @@
                  => (t/throws Exception)
                  (provided (datomic.ion.cast/alert anything) => nil))
 
-         (t/against-background (datomic.client.api/client anything) => ..client..
+         (t/against-background (t-fun.core/stage) => :test
+                               (datomic.client.api/client anything) => ..client..
                                (datomic.client.api/connect anything anything) => ..client..
                                (datomic.ion.cast/event anything) => (t/two-of nil)
                                (upload-docs anything anything) => {:status "success"}))

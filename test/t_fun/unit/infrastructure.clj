@@ -40,7 +40,7 @@
                                            {:DomainStatusList [{:Processing true}]}
                                            {:DomainStatusList [{:Processing false :RequiresIndexDocuments false}]}]
                              (#'t-fun.infrastructure/fix-schema!? anything anything) t/=streams=> [true false]
-                             (create-cloudsearch-domain ..cs-client.. anything) => nil
+                             (#'t-fun.infrastructure/create-cloudsearch-domain ..cs-client.. anything) => nil
                              (cognitect.aws.client.api/invoke ..cs-client.. (contains {:op :IndexDocuments}))
                              => :success
                              (datomic.ion.cast/event (contains {:msg "Creating Cloudsearch domain"})) => nil
