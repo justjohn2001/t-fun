@@ -13,6 +13,6 @@ If you need the infrastructure to work, run the REPL with the following environm
 
 `DATOMIC_APP_INFO_MAP='{:app-name "t-fun" :deployment-group "<deployment-group>"}''`
 
-Copyright Hotel JV Services 2019
+Copyright Hotel JV Services, LLC 2019
 
 Released as open source June 12, 2020.
