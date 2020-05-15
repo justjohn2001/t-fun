@@ -1,5 +1,5 @@
 # T-FUN
-Functions that run on the Datomic main query group.
+An example of functions that run on the Datomic main query group (the transactor) which synchronize the Datomic data with an external data source, Cloudsearch in this case. The Cloudsearch cluster and other infrastructure are created or updated on each deploy of the application.
 
 ## Deploy
 `clj -A:dev -m datomic.ion.dev '{:op :push}'`
@@ -13,6 +13,6 @@ If you need the infrastructure to work, run the REPL with the following environm
 
 `DATOMIC_APP_INFO_MAP='{:app-name "t-fun" :deployment-group "<deployment-group>"}''`
 
-For work developing on infrastructure, and connecting to a nrepl.
+Copyright Hotel JV Services 2019
 
-`DATOMIC_ION_APPLICATION_INFO='{:deployment-group "dc-[production|qa|development|test]-compute-main" :app-name "t-fun"}' clj -A:nrepl`
+Released as open source June 12, 2020.
