@@ -1,52 +1,40 @@
 (ns t-fun.unit.cloudsearch-load
   (:require [t-fun.cloudsearch-load :refer :all :as cs-load]
+            [t-fun.lib.datomic :as t-d]
             [midje.sweet :as t :refer [=> contains anything just]]
             [datomic.ion :as ion]))
 
 (t/fact "datomic-config"
-        (datomic-config :test) => map?)
+        (t-d/datomic-config :test) => map?)
 
 (t/fact "make-resource-name"
         (make-resource-name "test") => "app-group-infrastructure-test"
         (provided
          (ion/get-app-info) => {:app-name "app" :deployment-group "group"}))
 
-(t/fact "expand-n-gram"
-        (expand-n-gram "test") => #{"t" "te" "tes" "test"})
-
-(t/facts
- (t/fact "make-starts-with"
-         (make-starts-with "Te$+  Runs ") => "te runs")
- (t/fact "make-starts-with including a regex"
-         (make-starts-with "+est  rUn$" #"\s") => ["est" "run"]))
-
-(def datomic-result {:rk.place/id "abc123"
+(def datomic-result {:place/id "abc123"
                      :iata/airport-code "CHO"
-                     :rk.place/display-name "Charlottesville, Virginia, USA"
-                     :rk.location/hotel-count 23
-                     :rk.geo/latitude -78.3
-                     :rk.geo/longitude 38.2
-                     :rk.place/name "Charlottesville"
-                     :rk.place/type "city"
-                     :alt-id "abc-123-alt"
-                     :rk.place/region {:rk.region/code "VA"
-                                       :rk.region/name "Virginia"}
-                     :rk.place/country {:rk.country/code "USA"
-                                        :rk.country/name "USA"}})
+                     :place/display-name "Charlottesville, Virginia, USA"
+                     :location/hotel-count 23
+                     :geo/latitude -78.3
+                     :geo/longitude 38.2
+                     :place/name "Charlottesville"
+                     :place/type "city"
+                     :place/region {:region/code "VA"
+                                    :region/name "Virginia"}
+                     :place/country {:country/code "USA"
+                                     :country/name "USA"}})
 
 (t/facts
  (t/fact "datomic->aws"
          (datomic->aws datomic-result) => (contains {:type "add"
-                                                     :id "abc-123-alt"
-                                                     :fields (contains {:tid "abc123"
+                                                     :id "abc123"
+                                                     :fields (contains {:id "abc123"
                                                                         :full_name "Charlottesville, Virginia, USA"
-                                                                        :full_name_starts_with (contains ["c" "charlottesville virginia usa"])
-                                                                        :full_name_starts_with_anywhere (contains ["charlottesville" "virginia" "usa"])
                                                                         :hotel_count 23
                                                                         :latlng "-78.300000,38.200000"
                                                                         :name "Charlottesville"
                                                                         :place_type "city"
-                                                                        :is_primary "false"
                                                                         :airport_code "CHO"
                                                                         :country_code "USA"
                                                                         :country_name "USA"
@@ -54,30 +42,22 @@
                                                                         :region "Virginia"})}))
  (t/fact "datomic->aws minimal"
          (datomic->aws (dissoc datomic-result
-                               :alt-id :iata/airport-code :rk.place/region :rk.place/country))
+                               :iata/airport-code :place/region :place/country))
          => (contains {:type "add"
                        :id "abc123"
-                       :fields (contains {:tid "abc123"
+                       :fields (contains {:id "abc123"
                                           :full_name "Charlottesville, Virginia, USA"
-                                          :full_name_starts_with (contains ["c" "charlottesville virginia usa"])
-                                          :full_name_starts_with_anywhere (contains ["charlottesville" "virginia" "usa"])
                                           :hotel_count 23
                                           :latlng "-78.300000,38.200000"
                                           :name "Charlottesville"
-                                          :place_type "city"
-                                          :is_primary "true"})}))
+                                          :place_type "city"})}))
  (t/fact "datomic->aws with no hotel count results in delete"
-         (datomic->aws (dissoc datomic-result :rk.location/hotel-count :alt-id))
+         (datomic->aws (dissoc datomic-result :location/hotel-count))
          => {:type "delete"
              :id "abc123"}
-         (datomic->aws (assoc datomic-result :rk.location/hotel-count 0))
+         (datomic->aws (assoc datomic-result :location/hotel-count 0))
          => {:type "delete"
-             :id "abc-123-alt"}))
-
-(t/fact "make-alt-location replaces display-name and adds alt-id"
-        (make-alt-location (dissoc datomic-result :alt-id))
-        => (contains {:alt-id "abc123-region_code"
-                      :rk.place/display-name "Charlottesville, VA, USA"}))
+             :id "abc123"}))
 
 (t/fact "datomic-transactions is lazy"
         (take 1 (datomic-transactions ..conn.. 0)) => (t/one-of [1])
@@ -91,16 +71,17 @@
 
 (t/facts "expand-counties-and-regions"
          (t/fact "type :place not expanded"
-                 (expand-countries-and-regions ..conn.. [[:place 123 1 1] [:place 124 1 2]])
+                 (expand-countries-and-regions ..conn.. [{:type :place :e 123 :tx 1 :t-id 1}
+                                                         {:type :place :e 124 :tx 1 :t-id 2}])
                  => [[123 1] [124 2]])
          (t/fact "type :country expands"
-                 (expand-countries-and-regions ..conn.. [[:country 123 1 1]])
+                 (expand-countries-and-regions ..conn.. [{:type :country :e 123 :t-id 1 :tx 1}])
                  => [[456 1] [457 1]]
                  (provided (datomic.client.api/db ..conn..) => ..db..
                            (datomic.client.api/as-of ..db.. anything) => ..asof..
                            (datomic.client.api/q anything anything anything) => [[456 1] [457 1]]))
          (t/fact "type :region expands"
-                 (expand-countries-and-regions ..conn.. [[:region 123 1 1]])
+                 (expand-countries-and-regions ..conn.. [{:type :region :e 123 :t-id 1 :tx 1}])
                  => [[456 1] [457 1]]
                  (provided (datomic.client.api/db ..conn..) => ..db..
                            (datomic.client.api/as-of ..db.. anything) => ..asof..
@@ -154,8 +135,8 @@
                                 {:t 11
                                  :data [{:e 1235 :a 2 :v "val2" :tx 1000 :added true}]}]]))
          (t/against-background (get-queue-url ..sqs-client.. anything) => ..url..
-                               (get-attribute-ids ..conn..) => [{:db/id 1 :db/ident :rk.place/id}
-                                                                {:db/id 2 :db/identy :rk.place/name}]
+                               (get-attribute-ids ..conn..) => [{:db/id 1 :db/ident :place/id}
+                                                                {:db/id 2 :db/identy :place/name}]
                                (entity-reducer ..conn.. ..sqs-client.. ..url.. anything) => fake-reducer))
 
 (t/facts "queue-updates"
@@ -175,7 +156,7 @@
          (t/against-background (t-fun.core/stage) => :test
                                (datomic.client.api/client anything) => ..client..
                                (datomic.client.api/connect ..client.. anything) => ..conn..
-                               (get-tx-param ..conn..) => {:rk.param/int-value 10}
+                               (get-tx-param ..conn..) => {:param/int-value 10}
                                (walk-transactions ..conn.. anything 11 anything) => {:max-t 11 :sent 1 :deleted 0}
                                (set-tx-param ..conn.. anything) => nil))
 
@@ -194,7 +175,7 @@
                  (load-locations-to-cloudsearch {:input "{\"Records\":[{\"body\": \"{:op :update :ids [1, 2]}\"}]}"})
                  => "({:status \"success\"})"
                  (provided (datomic.client.api/db ..client..) => ..db..
-                           (location-details ..db.. anything) => [{:rk.place/id "1234"} {:rk.place/id "2345"}]))
+                           (location-details ..db.. anything) => [{:place/id "1234"} {:place/id "2345"}]))
          (t/fact "unknown ops are thrown"
                  (load-locations-to-cloudsearch {:input "{\"Records\":[{\"body\": \"{:op :unknown :ids [1, 2]}\"}]}"})
                  => (t/throws Exception)

@@ -3,30 +3,30 @@
    [cheshire.core :as json]
    [clojure.edn :as edn]
    [clojure.set :as set]
-   [clojure.tools.logging :as log]
    [cognitect.aws.client.api :as aws]
-   [cognitect.aws.util :as aws.util]
    [crucible.core :as c]
+   [crucible.aws.cloudwatch :as cw]
    [crucible.aws.events :as events]
    [crucible.aws.lambda :as lambda]
-   [crucible.aws.iam :as iam]
    [crucible.aws.sqs :as sqs]
    [crucible.aws.sqs.queue :as sqs.q]
    [crucible.encoding :as e]
    [datomic.ion :as ion]
    [t-fun.lib.cast :as cast]
-   [t-fun.core :as core])
-  (:import java.util.UUID))
+   [t-fun.core :as core]))
 
 (defn- interval [] 1000) ; override for testing
 
-(def account-id "304062982811")
+(def account-id "<account id>")
 (def region "us-east-1")
+(def bucket-name "<bucket name")
 
 (def default-arn-role (format "arn:aws:iam::%s:role/CfAdministratorAccess" account-id))
 
+(def ops-sns-channel (format "arn:aws:sns:us-east-1:%s:slack-notification-channel" account-id))
+
 (def t-fun-query-group-policies
-  [{:PolicyName "RoomkeyTFunSQSAccess"
+  [{:PolicyName "TFunSQSAccess"
     :PolicyDocument {:Version "2012-10-17"
                      :Statement [{:Effect "Allow"
                                   :Action ["sqs:ReceiveMessage" "sqs:GetQueueAttributes"
@@ -52,14 +52,48 @@
                                                                region account-id name)})
                                        fn-names)}))
 
+(defn cloudsearch-documents-alarm [alarm-name]
+  (let [five-minutes (* 60 5)]
+    (cw/alarm
+     {::cw/actions-enabled true
+      ::cw/alarm-actions [ops-sns-channel]
+      ::cw/alarm-name alarm-name
+      ::cw/evaluation-periods 1
+      ::cw/datapoints-to-alarm 1
+      ::cw/comparison-operator "LessThanLowerOrGreaterThanUpperThreshold"
+      ::cw/treat-missing-data "missing"
+      ::cw/metrics [{::cw/id "m1"
+                     ::cw/metric-stat {::cw/metric
+                                       {::cw/namespace "AWS/CloudSearch"
+                                        ::cw/metric-name "SearchableDocuments"
+                                        ::cw/dimensions [{::cw/name "DomainName"
+                                                          ::cw/value (format "locations-%s" (name (core/stage)))}
+                                                         {::cw/name "ClientId"
+                                                          ::cw/value account-id}]}
+                                       ::cw/period five-minutes
+                                       ::cw/stat "Average"}}
+                    {::cw/id "ad1"
+                     ::cw/expression "ANOMALY_DETECTION_BAND(m1, 2)"
+                     ::cw/label "SearchableDocuments (expected)"
+                     ::cw/return-data true}]
+      ::cw/threshold-metric-id "ad1"})))
+
+(def make-cloudwatch-alarm-name
+  (memoize (fn make-cloudwatch-alarm-name* []
+             (format "%s-%s" (make-stack-name) "cloudwatch-documents-alarm"))))
+
 (defn make-template
   []
   (let [prefixed-name (fn make-prefixed-name [s] (format "%s-%s" (make-stack-name) s))
+        lambda-name (fn lambda-name [s] (format "%s-%s"
+                                                (:deployment-group (ion/get-app-info))
+                                                s))
         cloudsearch-queue-name (make-cloudsearch-load-queue-name)
         cloudsearch-queue (sqs/queue {::sqs.q/queue-name cloudsearch-queue-name
                                       ::sqs.q/visibility-timeout 300})
-        locations-lambda-name (format "%s-cloudsearch-locations" (get (ion/get-app-info) :deployment-group))
-        queue-lambda-name (format "%s-%s" (-> (ion/get-app-info) :deployment-group) "queue-updates")
+        locations-lambda-name (lambda-name "cloudsearch-locations")
+        queue-lambda-name (lambda-name "queue-updates")
+        rates-lambda-name (lambda-name "update-rates")
         cs-queue->lambda (lambda/event-source-mapping {::lambda/event-source-arn (c/xref (keyword cloudsearch-queue-name)
                                                                                          :arn)
                                                        ::lambda/function-name locations-lambda-name
@@ -67,14 +101,20 @@
                                                        ::lambda/enabled true})
         queue-lambda-perms (lambda/permission {::lambda/action "lambda:InvokeFunction"
                                                ::lambda/function-name queue-lambda-name
-                                               ::lambda/principal "events.amazonaws.com"})]
+                                               ::lambda/principal "events.amazonaws.com"})
+        rates-lambda-perms (lambda/permission {::lambda/action "lambda:InvokeFunction"
+                                               ::lambda/function-name rates-lambda-name
+                                               ::lambda/principal "events.amazonaws.com"})
+        cloudwatch-alarm-name (make-cloudwatch-alarm-name)]
     (-> {(keyword cloudsearch-queue-name) cloudsearch-queue
          (-> cloudsearch-queue-name (str "-esm") keyword) cs-queue->lambda
 
          (-> (prefixed-name "5-minute-rule") keyword)
          (five-minute-rule [queue-lambda-name])
 
-         (-> (prefixed-name "5-minute-rule-perms") keyword) queue-lambda-perms}
+         (-> (prefixed-name "5-minute-rule-perms") keyword) queue-lambda-perms
+         (-> (prefixed-name "5-minute-rule-perms2") keyword) rates-lambda-perms
+         (keyword cloudwatch-alarm-name) (cloudsearch-documents-alarm cloudwatch-alarm-name)}
         (c/template "Resources to support t-fun")
         e/encode)))
 
@@ -160,7 +200,7 @@
       (update-in ["Resources" "DatomicLambdaRole" "Properties" "Policies"]
                  (fn [policies]
                    (into []
-                         (filter #(not (re-find #"RoomkeyTFun.*"
+                         (filter #(not (re-find #"TFun.*"
                                                 (get-in % ["PolicyName"] "")))
                                  policies)))) ;; remove any existing Tfun policies
       (update-in ["Resources" "DatomicLambdaRole" "Properties" "Policies"]
@@ -181,7 +221,6 @@
           :else (let [{:keys [Parameters Capabilities]} (get-in describe-response [:Stacks 0])
                       adjusted-template (adjust-template TemplateBody t-fun-query-group-policies)
                       s3-client (aws/client {:api :s3})
-                      bucket-name "rk-persist"
                       key-name (format "%s/template/%s-%08x"
                                        app-name
                                        deployment-group
@@ -292,11 +331,11 @@
             domain-status (get-in domain-status-list [:DomainStatusList 0])]
         (cond
           (not (:DomainStatusList domain-status-list))
-          (do (let [msg {:msg "Error calling DescribeDomains"
-                         ::domain domain-name
-                         ::result domain-status-list}]
-                (cast/alert msg)
-                (pr-str msg)))
+          (let [msg {:msg "Error calling DescribeDomains"
+                     ::domain domain-name
+                     ::result domain-status-list}]
+            (cast/alert msg)
+            (pr-str msg))
 
           (not domain-status)
           (do (cast/event {:msg "Creating Cloudsearch domain" ::domain-name domain-name})

@@ -1,29 +1,15 @@
 (ns t-fun.cloudsearch-load
   (:require [cheshire.core :as json]
             [clojure.edn :as edn]
-            [clojure.set :as set]
             [clojure.string :as string]
-            [clojure.tools.logging :as log]
+            [clojure.walk :as walk]
             [cognitect.aws.client.api :as aws]
             [datomic.client.api :as d]
-            [datomic.client.api.async :as da]
-
-            [clojure.walk :as walk]
-            [datomic.ion.cast :as cast]
             [datomic.ion :as ion]
+            [datomic.ion.cast :as cast]
             [t-fun.core :as core]
-            [t-fun.infrastructure :as inf])
-  (:import (java.time Instant)
-           (java.io ByteArrayInputStream)))
-
-(def region "us-east-1")
-
-(defn datomic-config
-  [stage-str]
-  {:server-type :ion
-   :region region
-   :system (format "datomic-cloud-%s" stage-str)
-   :endpoint (format "http://dc-%s-compute-main.c0pt3r.local:8182/" stage-str)})
+            [t-fun.infrastructure :as inf]
+            [t-fun.lib.datomic :as lib.d]))
 
 (defn make-resource-name
   [s]
@@ -35,89 +21,46 @@
 
 (def attribute->entity
   {nil :place
-   :rk.location/hotel-count :place
-   :rk.place/id :place
-   :rk.place/region :place
-   :rk.place/name :place
-   :rk.place/type :place
-   :rk.place/country :place
+   :location/hotel-count :place
+   :place/id :place
+   :place/region :place
+   :place/name :place
+   :place/type :place
+   :place/country :place
    :iata/airport-code :place
-   :rk.place/display-name :place
-   :rk.geo/latitude :place
-   :rk.geo/longitude :place
+   :place/display-name :place
+   :geo/latitude :place
+   :geo/longitude :place
 
-   :rk.country/code :country
-   :rk.country/name :country
+   :country/code :country
+   :country/name :country
 
-   :rk.region/name :region
-   :rk.region/code :region})
-
-(defn expand-n-gram
-  ([s]
-   (loop [result (sorted-set)
-          prefix [(first s)]
-          suffix (rest s)]
-     (if (seq suffix)
-       (recur (conj result (apply str prefix))
-              (conj prefix (first suffix))
-              (rest suffix))
-       (conj result (apply str prefix))))))
-
-;;; A version of this function also exists in apij.models.location to build queries
-;;; against the fields. Please keep both in sync.
-(defn make-starts-with
-  [s & [split-re]]
-  (-> s
-      string/lower-case
-      (string/replace #"[^a-z0-9 ]" " ")
-      (string/replace #"\s+" " ")
-      (string/replace #"^\s|\s$" "")
-      (cond->
-          split-re (string/split split-re))))
+   :region/name :region
+   :region/code :region})
 
 (defn datomic->aws
-  [{:keys [rk.place/id iata/airport-code
-           rk.place/display-name rk.location/hotel-count rk.geo/latitude rk.geo/longitude
-           rk.place/name rk.place/type
-           alt-id]
-    {region-code :rk.region/code region-name :rk.region/name} :rk.place/region
-    {country-code :rk.country/code country-name :rk.country/name} :rk.place/country
+  [{:keys [place/id iata/airport-code
+           place/display-name location/hotel-count geo/latitude geo/longitude
+           place/name place/type]
+    {region-code :region/code region-name :region/name} :place/region
+    {country-code :country/code country-name :country/name} :place/country
     :as m}]
   (if (or (nil? hotel-count) (zero? hotel-count))
     {:type "delete"
-     :id (string/replace (or alt-id id) " " "-")}
+     :id (string/replace id " " "-")}
     {:type "add"
-     :id (string/replace (or alt-id id) " " "-")
-     :fields (cond-> {:tid id
+     :id (string/replace id " " "-")
+     :fields (cond-> {:id id
                       :full_name display-name
-                      :full_name_starts_with (-> display-name
-                                                 make-starts-with
-                                                 expand-n-gram)
-                      :full_name_starts_with_anywhere (-> display-name
-                                                          (make-starts-with #" ")
-                                                          (->> (reduce (fn [coll i]
-                                                                         (apply conj coll (expand-n-gram i)))
-                                                                       (sorted-set))))
-
                       :hotel_count hotel-count
                       :latlng (format "%.6f,%.6f" latitude longitude)
                       :name name
-                      :place_type type
-                      :is_primary (str (nil? alt-id))}
+                      :place_type type}
                airport-code (assoc :airport_code airport-code)
                country-code (assoc :country_code country-code)
                country-name (assoc :country_name country-name)
                region-code (assoc :region_code region-code)
                region-name (assoc :region region-name))}))
-
-(defn make-alt-location
-  [{{:keys [rk.region/code rk.region/name]} :rk.place/region :as loc}]
-  (-> loc
-      (assoc :alt-id (str (:rk.place/id loc) "-region_code"))
-      (update :rk.place/display-name
-              #(string/replace %
-                               (format ", %s, " name)
-                               (format ", %s, " code)))))
 
 (defn get-attribute-ids
   [dt-conn]
@@ -134,6 +77,7 @@
                        {:start tx-id
                         :end (inc tx-id)})]
     (when (seq tx)
+      (cast/dev {:msg "Reading tx" ::tx-id tx-id})
       (cons (seq tx) (lazy-seq (datomic-transactions dt-conn (inc tx-id)))))))
 
 
@@ -167,18 +111,18 @@
       [{}])))
 
 (defn expand-countries-and-regions
-  [dt-conn [[entity-type _ tx] :as l]]             ;; this assumes that all the items in the list have the same entity-type and tx value
-  (let [e-t (mapv (juxt second #(nth % 3)) l)]
-    (case entity-type
+  [dt-conn [{:keys [type tx]} :as l]] ;; this assumes that all the items in the list have the same entity-type and tx value
+  (let [e-t (mapv (juxt :e :t-id) l)]
+    (case type
       :place e-t
       :country (d/q '[:find ?e ?t-id
                       :in $ [[?country-e ?t-id]]
-                      :where [?e :rk.place/country ?country-e]]
+                      :where [?e :place/country ?country-e]]
                     (-> dt-conn d/db (d/as-of tx))
                     e-t)
       :region (d/q '[:find ?e ?t-id
                      :in $ [[?region-e ?t-id]]
-                     :where [?e :rk.place/region ?region-e]]
+                     :where [?e :place/region ?region-e]]
                    (-> dt-conn d/db (d/as-of tx))
                    e-t))))
 
@@ -197,38 +141,25 @@
     ([{:keys [pending max-t]}]
      (merge {:max-t max-t}
             (when (not-empty pending)
-              (let [id-map (into {}
-                                 (d/q '[:find ?e ?id
-                                        :in $ [?e ...]
-                                        :where [?e :rk.place/id ?id]]
-                                      (d/db dt-conn)
-                                      (keys pending)))
-                    updates (vals id-map)
-                    deletes (apply dissoc pending (keys id-map))
+              (let [changed-ids (map first
+                                     (d/q '[:find ?id
+                                            :in $ [?e ...]
+                                            :where [?e :place/id ?id]]
+                                          (d/history (d/db dt-conn))
+                                          (keys pending)))
                     send-result (into []
                                       (comp (partition-all 1000)
                                             (map pr-str)
                                             (map (partial sqs-send sqs-client sqs-url :update)))
-                                      updates)
-                    delete-result (into []
-                                        (comp (mapcat (fn [[tx v]]
-                                                        (d/q '[:find ?id
-                                                               :in $ [?e ...]
-                                                               :where [?e :rk.place/id ?id]]
-                                                             (-> dt-conn d/db (d/as-of (dec tx)))
-                                                             v)))
-                                              (map pr-str)
-                                              (map (partial sqs-send sqs-client sqs-url :delete)))
-                                        (group-by deletes (keys deletes)))]
-                {:sent (count updates) :send-results send-result
-                 :deleted (count deletes) :delete-results delete-result}))))
+                                      changed-ids)]
+                {:sent (count changed-ids) :send-results send-result}))))
     ([acc [e t-val]]
      (cond-> acc
        e (update-in [:pending e] (fnil max 0) t-val)
        t-val (update :max-t (fnil max 0) t-val)))))
 
-(defn- type-and-tx [e]
-  [(first e) (nth e 2)])
+(def tx-and-type
+  (juxt :tx :type))
 
 (defn get-queue-url
   [client queue-name]
@@ -255,12 +186,14 @@
                      cat
                      (map (juxt :t #(find-entities location-attributes (:data %))))
                      (mapcat (fn [[t-id d]]
-                               (sort-by type-and-tx
+                               (sort-by tx-and-type
                                         (map (fn [{:keys [e a tx]}]
-                                               (vector (-> a id->ident attribute->entity)
-                                                       e tx t-id))
+                                               {:type (-> a id->ident attribute->entity)
+                                                :e e
+                                                :tx tx
+                                                :t-id t-id})
                                              d))))
-                     (partition-by type-and-tx)
+                     (partition-by tx-and-type)
                      (mapcat (partial expand-countries-and-regions dt-conn)))
                (entity-reducer dt-conn sqs-client sqs-url start-tx)
                (datomic-transactions dt-conn start-tx))))
@@ -269,9 +202,9 @@
 
 (defn get-tx-param
   [dt-conn]
-  (ffirst (d/q '[:find (pull ?e [:db/id :rk.param/int-value])
+  (ffirst (d/q '[:find (pull ?e [:db/id :param/int-value])
                  :in $ ?name
-                 :where [?e :rk.param/name ?name]]
+                 :where [?e :param/name ?name]]
                (d/db dt-conn)
                tx-param-name)))
 
@@ -279,27 +212,29 @@
   [dt-conn max-t]
   (d/transact dt-conn
               {:tx-data [{:db/id "param"
-                          :rk.param/name tx-param-name
-                          :rk.param/int-value max-t}]}))
+                          :param/name tx-param-name
+                          :param/int-value max-t}]}))
+
+(def sqs-client
+  (delay (aws/client {:api :sqs})))
 
 (defn queue-updates
   [{:keys [input]}]
   (try
-    (let [options (try (edn/read-string input) (catch Exception e {}))
-          dt-conn (-> (datomic-config (name (core/stage)))
-                      d/client
-                      (d/connect {:db-name "rk"}))
-          sqs-client (aws/client {:api :sqs})
-          {e :db/id last-tx :rk.param/int-value
-           :or {last-tx 0}
-           :as r} (get-tx-param dt-conn)
+    (let [options (try (edn/read-string input) (catch Exception _ {}))
+          dt-conn (lib.d/get-conn (core/stage))
+          {last-tx :param/int-value
+           :or {last-tx 0}} (get-tx-param dt-conn)
+          _ (cast/event {:msg "queue-updates starting" ::input input ::last-tx last-tx})
           {:keys [max-t sent deleted]
-           :or {sent 0 deleted 0}} (walk-transactions dt-conn sqs-client
-                                                      (or (:start-tx options) (inc last-tx))
-                                                      (or (:timeout options) 120000))]
+           :or {sent 0 deleted 0}
+           :as result} (walk-transactions dt-conn @sqs-client
+                                          (or (:start-tx options) (inc last-tx))
+                                          (or (:timeout options) 240000))]
       (set-tx-param dt-conn max-t)
       (let [msg (format "Read through transaction %d. Sent %d updates, %d deletes." max-t sent deleted)]
         (cast/event {:msg msg
+                     ::result result
                      ::app "t-fun"})
         msg))
     (catch Exception e
@@ -327,22 +262,22 @@
 (defn location-details
   [db ids]
   (map first (d/q '[:find (pull ?e [:db/id
-                                    :rk.place/id
+                                    :place/id
                                     :iata/airport-code
-                                    :rk.place/display-name
-                                    :rk.location/hotel-count
-                                    :rk.geo/latitude
-                                    :rk.geo/longitude
-                                    :rk.place/name
-                                    :rk.place/type
+                                    :place/display-name
+                                    :location/hotel-count
+                                    :geo/latitude
+                                    :geo/longitude
+                                    :place/name
+                                    :place/type
 
-                                    {:rk.place/country [:rk.country/code
-                                                        :rk.country/name]}
-                                    {:rk.place/region [:rk.region/name
-                                                       :rk.region/code]}
+                                    {:place/country [:country/code
+                                                     :country/name]}
+                                    {:place/region [:region/name
+                                                    :region/code]}
                                     ])
                     :in $ [?id ...]
-                    :where [?e :rk.place/id ?id]]
+                    :where [?e :place/id ?id]]
                   db
                   ids)))
 
@@ -355,42 +290,41 @@
                         ::details {:domain-name domain-name
                                    :domain-status-list domain-status-list
                                    :endpoint endpoint}})
-           (aws/client {:api :cloudsearchdomain :endpoint-override endpoint}))))
+           (aws/client {:api :cloudsearchdomain
+                        :endpoint-override endpoint      ; Deprecated usage. Fix to use {:hostname "<hostname>"}
+                        }))))
 
 
 (defn load-locations-to-cloudsearch
   [{:keys [input]}]
   (try
-    (let [config (datomic-config (name (core/stage)))
-          dt-conn (-> config
-                      d/client
-                      (d/connect {:db-name "rk"}))
+    (let [dt-conn (lib.d/get-conn (core/stage))
           records (-> input
                       (json/parse-string true)
                       :Records)
           doc-client @locations-doc-client
-          result (sequence (map (fn [record]
-                                  (let [{:keys [op ids] :as request} (-> record :body edn/read-string)]
-                                    (case op
-                                      :delete (do (cast/event {:msg (format "processing batch of %d deletes" (count ids))
-                                                               ::deletes ids})
-                                                  (upload-docs doc-client
-                                                               (sequence (comp (mapcat #(vector % (str % "-region_code")))
-                                                                               (map #(hash-map :type "delete" :id %)))
-                                                                         ids)))
-                                      :update (do (cast/event {:msg (format "processing batch of %d updates" (count ids))
-                                                               ::updates ids})
-                                                  (let [location-data (location-details (d/db dt-conn) ids)]
-                                                    (->> location-data
-                                                         (into {}
-                                                               (comp
-                                                                (mapcat #(cond-> [%]
-                                                                           (get-in % [:rk.place/region :rk.region/code]) (conj (make-alt-location %))))
-                                                                (map (juxt #(or (:alt-id %) (:rk.place/id %)) datomic->aws))))
-                                                         vals
-                                                         (upload-docs doc-client))))
-                                      (throw (ex-info (format "Unknown operation - %s" op) {:request request}))))))
-                           records)]
+          result (sequence
+                  (map
+                   (fn [record]
+                     (let [{:keys [op ids] :as request} (-> record :body edn/read-string)]
+                       (case op
+                         :delete (do (cast/event {:msg (format "processing batch of %d deletes" (count ids))
+                                                  ::deletes ids})
+                                     (upload-docs doc-client
+                                                  (sequence (comp (mapcat #(vector % (str % "-region_code")))
+                                                                  (map #(hash-map :type "delete" :id %)))
+                                                            ids)))
+                         :update (do (cast/event {:msg (format "processing batch of %d updates" (count ids))
+                                                  ::updates ids})
+                                     (let [location-data (location-details (d/db dt-conn) ids)]
+                                       (->> location-data
+                                            (into {}
+                                                  (comp
+                                                   (map (juxt :place/id datomic->aws))))
+                                            vals
+                                            (upload-docs doc-client))))
+                         (throw (ex-info (format "Unknown operation - %s" op) {:request request}))))))
+                  records)]
       (cast/event {:msg "load-location-to-cloudsearch done"
                    ::result result})
       (pr-str result))

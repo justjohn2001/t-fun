@@ -21,12 +21,12 @@
 
 (t/facts "adjust-template"
          (t/fact "adds policy"
-                 (adjust-template "{}" [{:PolicyName "RoomkeyTFunSQSAccess"
+                 (adjust-template "{}" [{:PolicyName "TFunSQSAccess"
                                          :PolicyDocument {:Version "2012-10-17"
                                                           :Statement []}}])
-                 => #"RoomkeyTFunSQSAccess")
-         (t/fact "removes existing RoomkeyTFun policies"
-                 (adjust-template "{\"Resources\":{\"DatomicLambdaRole\":{\"Properties\":{\"Policies\":[{\"PolicyName\":\"RoomkeyTFunSQSAccess\",\"PolicyDocument\":{\"Version\":\"2012-10-17\",\"Statement\":[]}}]}}}}"
+                 => #"TFunSQSAccess")
+         (t/fact "removes existing TFun policies"
+                 (adjust-template "{\"Resources\":{\"DatomicLambdaRole\":{\"Properties\":{\"Policies\":[{\"PolicyName\":\"TFunSQSAccess\",\"PolicyDocument\":{\"Version\":\"2012-10-17\",\"Statement\":[]}}]}}}}"
                                   [])
                  => "{\"Resources\":{\"DatomicLambdaRole\":{\"Properties\":{\"Policies\":[]}}}}"))
 

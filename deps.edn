@@ -1,6 +1,5 @@
 {:paths     ["src" "resources"]
  :deps      {cheshire                            {:mvn/version "5.8.1"}
-             aws-clj {:mvn/version "1.2.0"}
              com.cognitect.aws/api               {:mvn/version "0.8.345"}
              com.cognitect.aws/endpoints         {:mvn/version "1.1.11.590"}
              com.cognitect.aws/cloudformation    {:mvn/version "717.2.442.0"}
@@ -10,16 +9,13 @@
              com.cognitect.aws/sqs               {:mvn/version "736.2.496.0"}
              com.datomic/client-cloud            {:mvn/version "0.8.78"}
              com.datomic/ion                     {:mvn/version "0.9.35"}
-             com.roomkey/drcfg                   {:mvn/version "6.4.0"
-                                                  :exclusions  [org.slf4j/slf4j-log4j12]}
-             crucible                            {:mvn/version "0.42.7"}
+             crucible                            {:mvn/version "0.43.1"}
              org.clojure/data.json               {:mvn/version "0.2.6"}
              org.clojure/clojure                 {:mvn/version "1.10.1"}
              }
  ;; TODO: figure out how to not get warnings about :dependency-conflicts when pushing
 
  :mvn/repos {"datomic-cloud" {:url "s3://datomic-releases-1fc2183a/maven/releases"}
-             "rk-maven"      {:url "s3p://rk-maven/releases"}
              "central"       {:url "https://repo1.maven.org/maven2/"}
              "clojars"       {:url "https://clojars.org/repo"}}
  :aliases   {:dev {:extra-deps {com.datomic/ion-dev {:mvn/version "0.9.234"}}}
